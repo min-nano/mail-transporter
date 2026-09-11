@@ -8,19 +8,9 @@ URL="$(service_url)"
 TEMPLATE="${VM_NAME}-$(echo "${TAG}" | tr -c 'a-z0-9\n' '-' | cut -c1-20)-$(date +%Y%m%d%H%M%S)"
 CONTAINER_ENV="ICLOUD_USER=${ICLOUD_USER},ICLOUD_PASSWORD_SECRET=projects/${PROJECT_ID}/secrets/${SECRET_ICLOUD},FORWARDER_URL=${URL},RETRIGGER_INTERVAL=600,IDLE_TIMEOUT=240,HEALTH_PORT=${HEALTH_PORT}"
 
-# 1. Health check + firewall rule for Google's health-check probers.
-if ! gcloud compute health-checks describe "${HEALTH_CHECK}" >/dev/null 2>&1; then
-  gcloud compute health-checks create http "${HEALTH_CHECK}" \
-    --port "${HEALTH_PORT}" --request-path /healthz \
-    --check-interval 60s --timeout 10s --healthy-threshold 1 --unhealthy-threshold 3
-fi
-if ! gcloud compute firewall-rules describe "${VM_NAME}-allow-health-check" >/dev/null 2>&1; then
-  gcloud compute firewall-rules create "${VM_NAME}-allow-health-check" \
-    --network default --direction INGRESS --action ALLOW --rules "tcp:${HEALTH_PORT}" \
-    --source-ranges 35.191.0.0/16,130.211.0.0/22 --target-tags "${VM_NAME}"
-fi
+# The health check and firewall rule are created once by 01_infra.sh.
 
-# 2. Instance template for this image tag (templates are immutable).
+# 1. Instance template for this image tag (templates are immutable).
 gcloud compute instance-templates create-with-container "${TEMPLATE}" \
   --machine-type e2-micro \
   --boot-disk-size 10GB --boot-disk-type pd-standard \
@@ -34,7 +24,7 @@ gcloud compute instance-templates create-with-container "${TEMPLATE}" \
   --metadata google-logging-enabled=true,google-monitoring-enabled=true \
   --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring
 
-# 3. Managed instance group of size 1 with autohealing.
+# 2. Managed instance group of size 1 with autohealing.
 if gcloud compute instance-groups managed describe "${VM_NAME}" --zone "${ZONE}" >/dev/null 2>&1; then
   gcloud compute instance-groups managed rolling-action start-update "${VM_NAME}" --zone "${ZONE}" \
     --version "template=${TEMPLATE}" \
@@ -47,7 +37,7 @@ else
     --health-check "${HEALTH_CHECK}" --initial-delay "${HEALTH_INITIAL_DELAY}"
 fi
 
-# 4. Drop templates from earlier rollouts (the group only references the new one).
+# 3. Drop templates from earlier rollouts (the group only references the new one).
 gcloud compute instance-templates list --filter "name~^${VM_NAME}- AND name!=${TEMPLATE}" --format 'value(name)' \
   | xargs -r -n1 gcloud compute instance-templates delete --quiet 2>/dev/null || true
 

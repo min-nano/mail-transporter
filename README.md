@@ -112,6 +112,35 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 ```
 
 コード更新後は `./deploy/release.sh` でビルドと両方のロールアウトをまとめて行えます。
+`deploy/env.sh` を置かずに `PROJECT_ID` と `ICLOUD_USER` を環境変数で渡しても動きます（残りは `deploy/_common.sh` の既定値）。
+
+### 3b. main への push で自動デプロイする（任意）
+
+`.github/workflows/deploy.yml` が main への push ごとにテスト → Cloud Build → Cloud Run と watcher MIG のロールアウトを行います。
+認証はサービスアカウントの鍵を保存しない Workload Identity 連携です。
+
+1. GCP 側で連携用のプールとデプロイ専用サービスアカウントを一度だけ作ります（プロジェクトオーナーで実行）。
+
+   ```bash
+   GITHUB_REPO=owner/mail-transporter ./deploy/07_github_deployer.sh
+   ```
+
+   デプロイ用サービスアカウントに与えるのはロールアウトに必要な権限だけです（Cloud Build の投入、Cloud Run の管理、
+   インスタンステンプレートと MIG の管理、イメージの push、実行用サービスアカウントの利用）。
+   ヘルスチェックやファイアウォールなど一度きりのインフラは `01_infra.sh` 側にあり、CI からは触りません。
+2. スクリプトが表示する値を GitHub リポジトリの **Variables**（Settings → Secrets and variables → Actions → Variables）に登録します。
+
+   | 変数 | 必須 | 内容 |
+   |---|---|---|
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER` | ○ | `projects/<番号>/locations/global/workloadIdentityPools/github/providers/github` |
+   | `GCP_DEPLOYER_SA` | ○ | `mail-deployer@<project>.iam.gserviceaccount.com` |
+   | `GCP_PROJECT_ID` | ○ | GCP プロジェクト ID |
+   | `ICLOUD_USER` | ○ | iCloud メールアドレス |
+   | `GCP_REGION` / `GCP_ZONE` | | 既定 `us-central1` / `us-central1-a` |
+   | `GMAIL_LABEL` | | 既定 `iCloud`。`none` でラベルなし |
+
+3. 以後は main への push（PR のマージ）で自動的にデプロイされます。Actions の **Deploy** ワークフローから手動実行もできます。
+   同時に 2 つのデプロイが走らないよう直列化され、テストが失敗した場合はデプロイしません。
 
 ### 4. 動作確認
 
@@ -140,7 +169,7 @@ python -m mailtransporter.cli sync
 | `ICLOUD_USER` | – | iCloud メールアドレス |
 | `ICLOUD_PASSWORD` / `ICLOUD_PASSWORD_SECRET` | – | アプリ用パスワード。後者は Secret Manager のリソース名（watcher が使用） |
 | `GMAIL_OAUTH_JSON` / `GMAIL_OAUTH_JSON_SECRET` | – | `{"client_id","client_secret","refresh_token"}` |
-| `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効 |
+| `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効（デプロイスクリプトでは `none` を指定） |
 | `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上） |
 | `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム） |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
@@ -190,6 +219,7 @@ mailtransporter/
   watcher.py       GCE 用デーモン（IDLE 監視 → Cloud Run 呼び出し）
   health.py        watcher のハートビートと /healthz（MIG 自動修復用）
   cli.py           ローカル実行用
-deploy/            gcloud によるデプロイスクリプト
+deploy/            gcloud によるデプロイスクリプト（07 は GitHub Actions 用の Workload Identity 連携）
 scripts/           Gmail OAuth リフレッシュトークン取得
+.github/workflows/ ci.yml（PR でテスト）、deploy.yml（main への push で自動デプロイ）
 ```
