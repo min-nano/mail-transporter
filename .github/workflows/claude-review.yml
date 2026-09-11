@@ -83,7 +83,7 @@ jobs:
               コミット・イメージ・PR コメントに漏れないか。
             - GitHub Actions: `pull_request_target` / `workflow_run` / `issue_comment` の誤用、
               `permissions` の過剰付与、信用できない ref のチェックアウト、
-              `${{ }}` で untrusted な値を `run:` に直接展開していないか（スクリプトインジェクション）。
+              式展開で untrusted な値を `run:` に直接埋め込んでいないか（スクリプトインジェクション）。
             - サードパーティ Action が可変タグ参照になっていないか（コミット SHA 固定か）。
             - GCP: Workload Identity の属性条件が緩すぎないか、サービスアカウントの IAM が
               最小権限か、Secret Manager や Artifact Registry が意図せず公開されていないか、
