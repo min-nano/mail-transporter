@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mailtransporter.forwarder import DEFAULT_INSERTED_KEYWORD as KW, extract_message_id
+from mailtransporter.forwarder import DEFAULT_INSERTED_KEYWORD as KW
 from mailtransporter.gmail_client import GmailAuthError, GmailPermanentError, GmailRetryableError
 
 from conftest import FakeClock, make_forwarder, make_raw
@@ -59,29 +59,25 @@ def test_trash_failure_after_insert_is_not_inserted_twice(mailbox, gmail):
     assert len(gmail.inserted) == 1
 
 
-def test_keyword_failure_after_insert_aborts_and_message_id_guards_next_run(mailbox, gmail):
+def test_keyword_failure_after_insert_aborts_and_next_run_duplicates_rather_than_loses(mailbox, gmail):
     mailbox.inbox[1] = make_raw("<x@example.com>")
     mailbox.fail_keyword.add(1)
     first = make_forwarder(mailbox, gmail).run()
     assert not first.ok and "flagging" in first.error
     assert len(gmail.inserted) == 1
-    assert 1 in mailbox.inbox
+    assert 1 in mailbox.inbox  # never trashed without the keyword
 
-    # Gmail now indexes the message; the next run finds it by Message-ID.
-    gmail.existing_message_ids["x@example.com"] = "gmail-1"
     mailbox.fail_keyword.clear()
     second = make_forwarder(mailbox, gmail).run()
     assert second.ok and second.trashed == 1
-    assert len(gmail.inserted) == 1
+    assert len(gmail.inserted) == 2  # a duplicate in Gmail, not a lost mail
 
 
-def test_existing_message_id_in_gmail_skips_insert(mailbox, gmail):
-    mailbox.inbox[1] = make_raw("<dup@example.com>")
-    gmail.existing_message_ids["dup@example.com"] = "gmail-existing"
+def test_keyword_match_is_case_insensitive(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    mailbox.flags[1] = frozenset({KW.lower()})
     result = make_forwarder(mailbox, gmail).run()
-    assert result.ok and result.trashed == 1 and result.forwarded == 1
-    assert gmail.inserted == []
-    assert KW in mailbox.flags[1]
+    assert result.trashed == 1 and gmail.inserted == []
 
 
 def test_retryable_gmail_error_leaves_message_in_inbox(mailbox, gmail):
@@ -106,6 +102,36 @@ def test_permanent_error_moves_to_failed_folder(mailbox, gmail):
     assert result.quarantined == 1 and result.forwarded == 1
     assert mailbox.folders["Forward-Failed"] == [1]
     assert mailbox.folders["Deleted Messages"] == [2]
+
+
+def test_systemic_rejections_do_not_quarantine(mailbox, gmail):
+    """Every message rejected and nothing accepted: the account is broken, not the mail."""
+    for uid in range(1, 5):
+        mailbox.inbox[uid] = make_raw(f"<{uid}@example.com>")
+    gmail.errors.extend([GmailPermanentError("400 bad label")] * 4)
+    result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
+    assert not result.ok and "rejected" in result.error
+    assert result.quarantined == 0
+    assert set(mailbox.inbox) == {1, 2, 3, 4}
+    assert "Forward-Failed" not in mailbox.folders
+
+
+def test_rejections_below_threshold_are_quarantined_even_without_successes(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    mailbox.inbox[2] = make_raw("<two@example.com>")
+    gmail.errors.extend([GmailPermanentError("413 too large")] * 2)
+    result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
+    assert result.ok and result.quarantined == 2
+    assert mailbox.folders["Forward-Failed"] == [1, 2]
+
+
+def test_rejections_with_a_success_are_quarantined(mailbox, gmail):
+    for uid in range(1, 5):
+        mailbox.inbox[uid] = make_raw(f"<{uid}@example.com>")
+    gmail.errors.extend([GmailPermanentError("413")] * 3)  # uids 1-3 rejected, 4 succeeds
+    result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
+    assert result.ok and result.forwarded == 1 and result.quarantined == 3
+    assert mailbox.folders["Forward-Failed"] == [1, 2, 3]
 
 
 def test_auth_error_aborts_run(mailbox, gmail):
@@ -172,14 +198,6 @@ def test_custom_keyword_name(mailbox, gmail):
     assert "$Moved" in mailbox.flags[1]
 
 
-def test_missing_message_id_is_inserted_without_lookup(mailbox, gmail):
+def test_message_without_message_id_is_forwarded(mailbox, gmail):
     mailbox.inbox[1] = make_raw(message_id=None)
-    result = make_forwarder(mailbox, gmail).run()
-    assert result.forwarded == 1
-
-
-def test_extract_message_id():
-    assert extract_message_id(make_raw("<x@y>")) == "<x@y>"
-    assert extract_message_id(make_raw(None)) is None
-    assert extract_message_id(b"Message-ID:\r\n <folded@\r\n example.com>\r\n\r\n") == "<folded@example.com>"
-    assert extract_message_id(b"\xff\xfe not mail") is None
+    assert make_forwarder(mailbox, gmail).run().forwarded == 1

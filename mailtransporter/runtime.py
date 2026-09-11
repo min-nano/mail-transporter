@@ -40,5 +40,6 @@ def build_forwarder(settings: ForwarderSettings | None = None) -> Forwarder:
         failed_folder=settings.failed_folder,
         inserted_keyword=settings.inserted_keyword,
         time_budget_seconds=settings.time_budget_seconds,
+        rejection_threshold=settings.rejection_threshold,
     )
     return Forwarder(mailbox_factory, gmail_factory, options)

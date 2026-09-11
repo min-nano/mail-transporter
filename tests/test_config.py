@@ -51,6 +51,11 @@ def test_forwarder_settings_rejects_bad_keyword(monkeypatch):
     monkeypatch.setenv("INSERTED_KEYWORD", "has space")
     with pytest.raises(ConfigError):
         ForwarderSettings.from_env()
+    # keywords Apple Mail / iCloud set themselves would trash unforwarded mail
+    for reserved in ("$Forwarded", "$junk", "$MailFlagBit0"):
+        monkeypatch.setenv("INSERTED_KEYWORD", reserved)
+        with pytest.raises(ConfigError):
+            ForwarderSettings.from_env()
 
 
 def test_watcher_settings_requires_url(monkeypatch):

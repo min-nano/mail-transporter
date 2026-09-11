@@ -22,7 +22,7 @@ gcloud services enable iamcredentials.googleapis.com sts.googleapis.com >/dev/nu
 gcloud iam service-accounts describe "${DEPLOYER_SA}" >/dev/null 2>&1 \
   || gcloud iam service-accounts create "${DEPLOYER_NAME}" --display-name "mail-transporter GitHub deployer"
 
-# Workload identity pool + GitHub OIDC provider, restricted to this repository.
+# Workload identity pool + GitHub OIDC provider, restricted to this repository's main branch.
 gcloud iam workload-identity-pools describe "${POOL}" --location global >/dev/null 2>&1 \
   || gcloud iam workload-identity-pools create "${POOL}" --location global --display-name "GitHub Actions"
 if ! gcloud iam workload-identity-pools providers describe "${PROVIDER}" \
@@ -32,8 +32,14 @@ if ! gcloud iam workload-identity-pools providers describe "${PROVIDER}" \
     --display-name "GitHub" \
     --issuer-uri "https://token.actions.githubusercontent.com" \
     --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
-    --attribute-condition "assertion.repository == '${GITHUB_REPO}'"
+    --attribute-condition "assertion.repository == '${GITHUB_REPO}' && assertion.ref == 'refs/heads/main' && assertion.ref_type == 'branch'"
+else
+  gcloud iam workload-identity-pools providers update-oidc "${PROVIDER}" \
+    --location global --workload-identity-pool "${POOL}" \
+    --attribute-condition "assertion.repository == '${GITHUB_REPO}' && assertion.ref == 'refs/heads/main' && assertion.ref_type == 'branch'"
 fi
+# Only workflow runs on this repository's main branch can become the deployer;
+# a workflow_dispatch from any other branch is refused at token exchange.
 gcloud iam service-accounts add-iam-policy-binding "${DEPLOYER_SA}" \
   --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/attribute.repository/${GITHUB_REPO}" \

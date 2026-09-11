@@ -51,16 +51,18 @@ IMAP キーワード（`$GmailInserted`）として記録します。
                       │ 恒久的エラー(400 等)               → Forward-Failed フォルダへ退避
    ```
    * キーワード付与後・ゴミ箱移動前にクラッシュしても、次回はキーワードを見て **insert をスキップ** します。
-   * insert 後・キーワード付与前のクラッシュ（ごく短い窓）には、Message-ID による `rfc822msgid:` 検索で
-     Gmail 側の存在確認を行って備えます。
+   * insert 後・キーワード付与前（IMAP 往復 1 回分の窓）にクラッシュすると、次回もう一度 insert されて
+     Gmail に **重複** が生じます。消失ではなく重複に倒す設計です。Gmail 検索による重複排除は
+     メール読み取りスコープが必要になるうえ、偽装した Message-ID で配送を抑止できる経路になるため行いません。
    * 接続時に `PERMANENTFLAGS` に `\*` が含まれるか確認し、カスタムキーワードを保存できないサーバでは
-     転送を行いません（フェイルクローズ）。キーワード付与の応答も検証します。
+     転送を行いません（フェイルクローズ）。キーワード付与はサーバの応答（無ければ再取得）で確認します。
    * 多重実行は Cloud Run の `max-instances=1, concurrency=1` とプロセス内ロックで直列化しています。
-     IMAP には compare-and-set が無いため、デプロイ直後にリビジョンが一瞬重なった場合の二重投入は
-     Message-ID 検索だけが防波堤になります。
+     デプロイ直後にリビジョンが一瞬重なった場合も、起こり得るのは重複であって消失ではありません。
 3. **消失させない。** Gmail に恒久的に拒否されたメール（サイズ超過など）は削除せず、
    iCloud 上の `Forward-Failed` フォルダへ退避します。ゴミ箱に入るのは Gmail への投入が確認できたメールだけです。
    一時的エラーは回数制限なく再試行します（メールは INBOX に残るだけなので安全です）。
+   1 回の実行で `REJECTION_THRESHOLD`（既定 3）件以上が拒否され、かつ 1 通も投入できなかった場合は
+   「メールではなくアカウントや設定の問題」とみなし、何も退避せずにエラーを返します（INBOX が丸ごと空になる事故を防ぎます）。
 4. **watcher は自動修復する。** watcher は監視ループの各ブロッキング操作（IDLE、forwarder 呼び出し、スリープ）の
    直前に「この操作は最大 N 秒かかる」とハートビートを更新し、`/healthz` はその猶予内なら 200 を返します。
    サイズ 1 のマネージドインスタンスグループ（MIG）がこれを監視し、VM の停止・削除・プロセスのハングを検出すると
@@ -97,6 +99,9 @@ IMAP キーワード（`$GmailInserted`）として記録します。
    pip install google-auth-oauthlib
    python scripts/gmail_oauth.py client_secret.json > gmail-oauth.json
    ```
+
+   要求するスコープは `gmail.insert` と `gmail.labels` だけです。どちらも既存メールの読み取りを含まないため、
+   リフレッシュトークンが漏れても Gmail の中身は読めません。スコープを変更した場合はトークンの取り直しが必要です。
 
 ### 3. GCP へのデプロイ
 
@@ -171,7 +176,9 @@ python -m mailtransporter.cli sync
 | `GMAIL_OAUTH_JSON` / `GMAIL_OAUTH_JSON_SECRET` | – | `{"client_id","client_secret","refresh_token"}` |
 | `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効（デプロイスクリプトでは `none` を指定） |
 | `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上） |
-| `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム） |
+| `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます |
+| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効） |
+| `ALLOWED_INVOKER_SA` | – | (forwarder) `/sync` を呼べるサービスアカウント。Cloud Run の IAM に加えてアプリ側でも ID トークンを検証する。未設定なら検証しない（ローカル用） |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
 | `FORWARDER_URL` | – | (watcher) Cloud Run の URL |
 | `RETRIGGER_INTERVAL` | `600` | (watcher) INBOX にメールが残っている場合の再トリガー間隔（秒） |
@@ -195,8 +202,21 @@ python -m mailtransporter.cli sync
   起動失敗の原因を確認してください。ヘルスチェックはコンテナ起動後 `HEALTH_INITIAL_DELAY`（既定 5 分）は判定しません。
 * **Secret Manager のアクセス回数**: Cloud Run はコールドスタート時、watcher は起動時にシークレットを読みます。
   通常のメール量では月 1 万回の無料枠に遠く及びません。
-* **外部 IP**: watcher VM は IMAP へ接続するため外部 IP を持ちます（Cloud NAT は有料）。
+* **外部 IP と SSH**: watcher VM は IMAP へ接続するため外部 IP を持ちます（Cloud NAT は有料）。
   e2-micro の無料枠には使用中の外部 IP 1 つが含まれますが、請求レポートで確認してください。
+  VM はメモリ上に iCloud のパスワードを持つため、ポート 22 はインターネットから閉じ、OS Login を強制し、
+  プロジェクト共通の SSH 鍵をブロックしています。ログインが必要なときは IAP 経由で接続してください。
+
+  ```bash
+  gcloud compute ssh <instance> --zone "$ZONE" --tunnel-through-iap
+  ```
+* **自動デプロイの信頼範囲**: Workload Identity プロバイダは `main` ブランチ上のワークフロー実行にしか
+  デプロイ用サービスアカウントを渡しません。他ブランチから `workflow_dispatch` してもトークン交換で拒否されます。
+  さらに Deploy ワークフローは `production` 環境に紐づいているので、リポジトリ設定で必須レビュアーを付ければ
+  すべてのロールアウトに人の承認を挟めます。
+* **ビルドの再現性**: ベースイメージはダイジェスト固定、依存はハッシュ付きの `requirements.txt` から
+  `--require-hashes` でインストールします。更新は Dependabot が PR を出します。依存を変えたときは
+  Python 3.12 で `pip-compile --generate-hashes --strip-extras -o requirements.txt pyproject.toml` を実行してください。
 * **リフレッシュトークンの失効** (`GmailAuthError`): OAuth 同意画面がテスト状態だと 7 日で失効します。
   再取得して `./deploy/02_secrets.sh gmail gmail-oauth.json` で更新し、Cloud Run を再デプロイしてください。
 
@@ -213,7 +233,7 @@ mailtransporter/
   config.py        環境変数 → 設定オブジェクト
   secrets.py       Secret Manager からの読み込み
   imap_client.py   iCloud IMAP（fetch / keyword / move / IDLE）
-  gmail_client.py  Gmail API（insert / ラベル / Message-ID 検索 / エラー分類）
+  gmail_client.py  Gmail API（insert / ラベル / エラー分類）
   forwarder.py     中核ロジック（1 回の同期パス）
   server.py        Cloud Run 用 Flask アプリ（/sync, /healthz）
   watcher.py       GCE 用デーモン（IDLE 監視 → Cloud Run 呼び出し）

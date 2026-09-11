@@ -16,16 +16,14 @@ from googleapiclient.http import MediaIoBaseUpload
 
 log = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+# Least privilege: insert messages and manage labels. Neither scope allows
+# reading existing mail, so a leaked refresh token cannot exfiltrate the mailbox.
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.insert",
+    "https://www.googleapis.com/auth/gmail.labels",
+]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 RESUMABLE_THRESHOLD = 5 * 1024 * 1024  # bytes
-RETRYABLE_403_REASONS = {
-    "rateLimitExceeded",
-    "userRateLimitExceeded",
-    "dailyLimitExceeded",
-    "quotaExceeded",
-    "backendError",
-}
 
 
 class GmailError(Exception):
@@ -57,27 +55,20 @@ def build_credentials(client_id: str, client_secret: str, refresh_token: str) ->
 
 def classify_http_error(exc: HttpError) -> type[GmailError]:
     status = int(getattr(exc.resp, "status", 0) or 0)
-    reason = _error_reason(exc)
     if status == 401:
         return GmailAuthError
     if status == 429 or status >= 500:
         return GmailRetryableError
     if status == 403:
-        return GmailRetryableError if reason in RETRYABLE_403_REASONS else GmailPermanentError
+        # 403s describe the account or project (quota, missing scope, API
+        # disabled, org policy), not this particular message. Never treat them
+        # as a permanent rejection of the mail: leave it in INBOX and retry.
+        return GmailRetryableError
     if status in (400, 404, 409, 410, 412, 413, 422):
         return GmailPermanentError
     return GmailRetryableError
 
 
-def _error_reason(exc: HttpError) -> str:
-    try:
-        payload = json.loads(exc.content.decode("utf-8"))
-        errors = payload.get("error", {}).get("errors") or []
-        if errors:
-            return str(errors[0].get("reason", ""))
-    except Exception:  # noqa: BLE001 - diagnostics only
-        pass
-    return ""
 
 
 class GmailClient:
@@ -124,17 +115,6 @@ class GmailClient:
         return created["id"]
 
     # -- messages ------------------------------------------------------
-    def find_by_message_id(self, message_id: str) -> str | None:
-        """Return the Gmail id of an existing message with this RFC 822 Message-ID."""
-        query = f"rfc822msgid:{message_id.strip().strip('<>')}"
-        listing = self._execute(
-            self._service.users().messages().list(
-                userId="me", q=query, maxResults=1, includeSpamTrash=True
-            )
-        )
-        messages = listing.get("messages") or []
-        return messages[0]["id"] if messages else None
-
     def insert_raw(self, raw: bytes, label_ids: list[str]) -> str:
         """Insert an RFC 822 message as-is (no SMTP, no spam filtering) and return its id."""
         media = MediaIoBaseUpload(

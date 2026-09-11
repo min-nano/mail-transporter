@@ -15,7 +15,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --concurrency 1 \
   --cpu 1 --memory 512Mi \
   --timeout 900 \
-  --set-env-vars "ICLOUD_USER=${ICLOUD_USER},GMAIL_LABEL=${LABEL},TIME_BUDGET_SECONDS=600" \
+  --set-env-vars "ICLOUD_USER=${ICLOUD_USER},GMAIL_LABEL=${LABEL},TIME_BUDGET_SECONDS=600,ALLOWED_INVOKER_SA=${WATCHER_SA}" \
   --set-secrets "ICLOUD_PASSWORD=${SECRET_ICLOUD}:latest,GMAIL_OAUTH_JSON=${SECRET_GMAIL}:latest" \
   --quiet
 

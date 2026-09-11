@@ -35,6 +35,10 @@ class FetchedMessage:
     def flagged(self) -> bool:
         return "\\Flagged" in self.flags
 
+    def has_keyword(self, keyword: str) -> bool:
+        """IMAP flags are case-insensitive atoms (RFC 3501)."""
+        return keyword.lower() in {f.lower() for f in self.flags}
+
 
 class ICloudMailbox:
     """A single IMAP session with INBOX selected.
@@ -145,16 +149,21 @@ class ICloudMailbox:
     def add_keyword(self, uid: int, keyword: str) -> None:
         """Set a custom keyword (e.g. ``$GmailInserted``) on ``uid``.
 
-        The server's reply is checked so that a silently ignored keyword is
-        treated as a failure rather than a success.
+        Fails closed: the keyword must be confirmed by the server, either in
+        the STORE reply or by re-fetching the flags, so a silently ignored
+        keyword can never be mistaken for success. Comparison is
+        case-insensitive because IMAP flags are atoms.
         """
         try:
             response = self.client.add_flags([uid], [keyword.encode("ascii")])
+            flags = {_decode(f).lower() for f in (response.get(uid) or ())}
+            if keyword.lower() not in flags:
+                fetched = self.client.fetch([uid], [b"FLAGS"])
+                flags = {_decode(f).lower() for f in (fetched.get(uid) or {}).get(b"FLAGS", ())}
         except Exception as exc:  # noqa: BLE001
             raise MailboxError(f"IMAP STORE +FLAGS {keyword} failed for uid={uid}: {exc}") from exc
-        flags = {_decode(f) for f in (response.get(uid) or ())}
-        if uid in response and keyword not in flags:
-            raise MailboxError(f"IMAP server did not persist keyword {keyword} on uid={uid}")
+        if keyword.lower() not in flags:
+            raise MailboxError(f"IMAP server did not confirm keyword {keyword} on uid={uid}")
 
     def trash_folder(self) -> str:
         if self._trash_folder:

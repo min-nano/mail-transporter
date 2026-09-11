@@ -20,6 +20,9 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    # Add required reviewers to this environment in the repository settings to
+    # put a human approval in front of every rollout, manual runs included.
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -30,7 +33,7 @@ jobs:
       ZONE: ${{ vars.GCP_ZONE }}
       GMAIL_LABEL: ${{ vars.GMAIL_LABEL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Check repository variables
         env:
@@ -44,12 +47,12 @@ jobs:
           exit $missing
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2.1.13
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2.2.1
 
       - name: Build and roll out
         run: ./deploy/release.sh "${GITHUB_SHA::7}"

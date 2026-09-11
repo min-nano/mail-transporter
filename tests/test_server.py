@@ -25,6 +25,35 @@ def test_sync_ok(monkeypatch):
     assert resp.get_json()["forwarded"] == 1
 
 
+def test_sync_rejects_get(monkeypatch):
+    monkeypatch.setattr(server, "get_forwarder", lambda: StubForwarder(SyncResult()))
+    assert server.app.test_client().get("/sync").status_code == 405
+
+
+def test_sync_requires_matching_invoker(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "get_forwarder", lambda: StubForwarder(SyncResult(forwarded=1)))
+    monkeypatch.setattr(server, "ALLOWED_INVOKER_SA", "watcher@p.iam.gserviceaccount.com")
+
+    import google.oauth2.id_token
+
+    def fake_verify(token, request):
+        calls.append(token)
+        if token == "good":
+            return {"email": "watcher@p.iam.gserviceaccount.com", "email_verified": True}
+        if token == "other":
+            return {"email": "someone@p.iam.gserviceaccount.com", "email_verified": True}
+        raise ValueError("bad token")
+
+    monkeypatch.setattr(google.oauth2.id_token, "verify_oauth2_token", fake_verify)
+    client = server.app.test_client()
+    assert client.post("/sync").status_code == 403
+    assert client.post("/sync", headers={"Authorization": "Bearer bad"}).status_code == 403
+    assert client.post("/sync", headers={"Authorization": "Bearer other"}).status_code == 403
+    assert client.post("/sync", headers={"Authorization": "Bearer good"}).status_code == 200
+    assert calls == ["bad", "other", "good"]
+
+
 def test_sync_error_status(monkeypatch):
     monkeypatch.setattr(server, "get_forwarder", lambda: StubForwarder(SyncResult(error="imap down")))
     resp = server.app.test_client().post("/sync")

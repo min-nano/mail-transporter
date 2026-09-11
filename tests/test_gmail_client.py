@@ -5,11 +5,16 @@ import json
 from googleapiclient.errors import HttpError
 
 from mailtransporter.gmail_client import (
+    SCOPES,
     GmailAuthError,
     GmailPermanentError,
     GmailRetryableError,
     classify_http_error,
 )
+
+
+def test_scopes_cannot_read_mail():
+    assert all(s.endswith(("gmail.insert", "gmail.labels")) for s in SCOPES)
 
 
 class Resp(dict):
@@ -29,7 +34,9 @@ def test_classification():
     assert classify_http_error(http_error(429)) is GmailRetryableError
     assert classify_http_error(http_error(500)) is GmailRetryableError
     assert classify_http_error(http_error(503, "backendError")) is GmailRetryableError
+    # 403 describes the account/project, never a single message: always retry.
     assert classify_http_error(http_error(403, "rateLimitExceeded")) is GmailRetryableError
-    assert classify_http_error(http_error(403, "insufficientPermissions")) is GmailPermanentError
+    assert classify_http_error(http_error(403, "insufficientPermissions")) is GmailRetryableError
+    assert classify_http_error(http_error(403, "accessNotConfigured")) is GmailRetryableError
     assert classify_http_error(http_error(400, "invalidArgument")) is GmailPermanentError
     assert classify_http_error(http_error(413)) is GmailPermanentError

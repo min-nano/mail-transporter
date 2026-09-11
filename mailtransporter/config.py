@@ -11,6 +11,16 @@ from .secrets import ConfigError, env_int, require_env, resolve_secret_env
 DEFAULT_IMAP_HOST = "imap.mail.me.com"
 DEFAULT_IMAP_PORT = 993
 
+# Keywords iCloud / Apple Mail (and other clients) set themselves. Using one of
+# them as INSERTED_KEYWORD would make existing mail look "already forwarded"
+# and send it to the Trash without ever reaching Gmail.
+RESERVED_KEYWORDS = {
+    "$forwarded", "$junk", "$notjunk", "$mdnsent", "$phishing", "$important",
+    "$label1", "$label2", "$label3", "$label4", "$label5",
+    "$mailflagbit0", "$mailflagbit1", "$mailflagbit2",
+    "junk", "nonjunk", "forwarded", "redirected",
+}
+
 
 @dataclass(frozen=True)
 class ICloudSettings:
@@ -68,18 +78,25 @@ class ForwarderSettings:
     failed_folder: str = "Forward-Failed"
     inserted_keyword: str = "$GmailInserted"
     time_budget_seconds: int = 480
+    rejection_threshold: int = 3
 
     @classmethod
     def from_env(cls) -> "ForwarderSettings":
         keyword = os.environ.get("INSERTED_KEYWORD", "$GmailInserted").strip()
         if not keyword or any(c in keyword for c in ' ()\\{"%*]') or not keyword.isascii():
             raise ConfigError("INSERTED_KEYWORD must be a plain ASCII IMAP atom such as $GmailInserted")
+        if keyword.lower() in RESERVED_KEYWORDS or keyword.lower().startswith("\\"):
+            raise ConfigError(
+                f"INSERTED_KEYWORD={keyword!r} is a keyword mail clients set themselves; "
+                "existing mail carrying it would be trashed without being forwarded"
+            )
         return cls(
             icloud=ICloudSettings.from_env(),
             gmail=GmailSettings.from_env(),
             failed_folder=os.environ.get("FAILED_FOLDER", "Forward-Failed"),
             inserted_keyword=keyword,
             time_budget_seconds=env_int("TIME_BUDGET_SECONDS", 480),
+            rejection_threshold=env_int("REJECTION_THRESHOLD", 3),
         )
 
 

@@ -15,13 +15,14 @@ gcloud compute instance-templates create-with-container "${TEMPLATE}" \
   --machine-type e2-micro \
   --boot-disk-size 10GB --boot-disk-type pd-standard \
   --service-account "${WATCHER_SA}" --scopes cloud-platform \
+  `# Secret Manager only accepts the cloud-platform scope; the real boundary is the IAM roles on WATCHER_SA` \
   --tags "${VM_NAME}" \
   --container-image "${IMAGE}:${TAG}" \
   --container-command python \
   --container-arg=-m --container-arg=mailtransporter.watcher \
   --container-env "${CONTAINER_ENV}" \
   --container-restart-policy always \
-  --metadata google-logging-enabled=true,google-monitoring-enabled=true \
+  --metadata google-logging-enabled=true,google-monitoring-enabled=true,enable-oslogin=TRUE,block-project-ssh-keys=TRUE \
   --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring
 
 # 2. Managed instance group of size 1 with autohealing.

@@ -69,15 +69,11 @@ class FakeMailbox:
 class FakeGmail:
     def __init__(self):
         self.inserted: list[tuple[bytes, list[str]]] = []
-        self.existing_message_ids: dict[str, str] = {}
         self.errors: list[GmailError] = []  # raised (in order) by insert_raw
         self.labels: dict[str, str] = {}
 
     def ensure_label(self, name):
         return self.labels.setdefault(name, f"Label_{len(self.labels) + 1}")
-
-    def find_by_message_id(self, message_id):
-        return self.existing_message_ids.get(message_id.strip("<>"))
 
     def insert_raw(self, raw, label_ids):
         if self.errors:
