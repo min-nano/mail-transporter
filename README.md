@@ -148,6 +148,43 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 3. 以後は main への push（PR のマージ）で自動的にデプロイされます。Actions の **Deploy** ワークフローから手動実行もできます。
    同時に 2 つのデプロイが走らないよう直列化され、テストが失敗した場合はデプロイしません。
 
+### 3c. PR を Claude に自動レビューさせる（任意）
+
+`.github/workflows/claude-review.yml` が、この リポジトリ内のブランチから開かれた PR に対して
+[Claude Code Action](https://github.com/anthropics/claude-code-action) を走らせ、セキュリティと
+コストを重点にレビューします。指摘は可能な限りインラインコメント、行に紐づかないものだけを
+レビュー本文にまとめ、最後に **承認 / 非承認** の判定を付けます。
+
+Claude Pro / Max のサブスクリプションをそのまま使うので、API キー（従量課金）は不要です。
+
+1. 手元の Claude Code で長期 OAuth トークンを発行します。
+
+   ```bash
+   claude setup-token
+   ```
+
+2. 出力されたトークンを GitHub リポジトリの **Secrets**（Settings → Secrets and variables → Actions →
+   Secrets）に `CLAUDE_CODE_OAUTH_TOKEN` という名前で登録します。未登録のときはワークフローが
+   その旨のエラーで即座に止まります。
+
+このワークフローが満たしている前提:
+
+* トリガは `pull_request` だけで、`pull_request_target` は使いません。fork からの PR には
+  シークレットが渡らないうえ、ジョブの `if` で明示的に除外しているので、書き込み権限のない
+  第三者が PR 経由でトークンやリポジトリの権限を引き出すことはできません。
+* ワークフロー既定の権限は空で、レビュージョブにだけ `contents: read` と `pull-requests: write` を
+  与えます。チェックアウトは `persist-credentials: false` です。
+* Claude に許可するのは読み取りと `gh pr` のコメント／レビュー投稿だけで、`Write` / `Edit` や
+  任意の `Bash` は渡しません。PR の本文や差分に書かれた文言は「指示」ではなく「データ」として
+  扱うようプロンプトで明示しています。
+* 同じ PR への連続 push は `concurrency` で古い実行を打ち切り、ジョブには `timeout-minutes: 20` を
+  置いているので、ハングやリトライで実行時間とサブスクリプションの利用枠を浪費しません。
+  draft の PR と Dependabot の PR はレビューしません（後者はシークレットを受け取れないため）。
+
+> **注意**: Claude の `--approve` は GitHub 上では通常の承認レビューです。ブランチ保護で必須承認数を
+> 設けている場合、Claude の承認だけでマージできてしまわないよう、Code Owners のレビューを必須にするなど
+> 人の承認が別途必要な設定にしてください。
+
 ### 4. 動作確認
 
 ```bash
