@@ -1,0 +1,47 @@
+"""Cloud Run entrypoint: an HTTP endpoint that performs one sync pass."""
+
+from __future__ import annotations
+
+import logging
+import threading
+
+from flask import Flask, jsonify
+
+from .runtime import build_forwarder, configure_logging
+
+configure_logging()
+log = logging.getLogger(__name__)
+
+app = Flask(__name__)
+_run_lock = threading.Lock()
+_forwarder = None
+_forwarder_lock = threading.Lock()
+
+
+def get_forwarder():
+    global _forwarder
+    with _forwarder_lock:
+        if _forwarder is None:
+            _forwarder = build_forwarder()
+        return _forwarder
+
+
+@app.get("/healthz")
+def healthz():
+    return jsonify({"status": "ok"})
+
+
+@app.route("/sync", methods=["POST", "GET"])
+def sync():
+    # Cloud Run is deployed with concurrency=1 / max-instances=1, but guard
+    # anyway: two overlapping passes would fight over the same UIDs.
+    if not _run_lock.acquire(blocking=False):
+        return jsonify({"status": "busy"}), 409
+    try:
+        result = get_forwarder().run()
+        return jsonify(result.to_dict()), (200 if result.ok else 500)
+    except Exception as exc:  # noqa: BLE001 - always answer with JSON
+        log.exception("sync failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+    finally:
+        _run_lock.release()

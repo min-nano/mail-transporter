@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.env
+deploy/env.sh
+client_secret*.json
+gmail-oauth*.json
+token*.json
