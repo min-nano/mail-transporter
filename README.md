@@ -19,20 +19,21 @@ iCloud 標準の転送機能（SMTP 経由）はヘッダの内容によって G
         │                              ┌───────────────────────────┐
         └─────────────────────────────►│ Cloud Run  "forwarder"    │◄── Cloud Scheduler
                                        │  mailtransporter.server   │    (30分毎の保険)
-                                       └──────┬─────────────┬──────┘
-                                              │             │
-                             Gmail API insert │             │ 冪等性・進捗の記録
-                                              ▼             ▼
-                                       ┌────────────┐  ┌────────────┐
-                                       │   Gmail    │  │ Firestore  │
-                                       └────────────┘  └────────────┘
+                                       └────────────┬──────────────┘
+                                                    │ Gmail API insert
+                                                    ▼
+                                             ┌────────────┐
+                                             │   Gmail    │
+                                             └────────────┘
 ```
+
+外部のデータストアは使いません。「Gmail に投入済み」という進捗は iCloud 側のメール自身に
+IMAP キーワード（`$GmailInserted`）として記録します。
 
 | コンポーネント | 役割 | 無料枠 |
 |---|---|---|
 | **watcher** (GCE e2-micro) | iCloud の INBOX を IMAP IDLE（非対応時はポーリング）で監視し、新着を検出したら Cloud Run を呼ぶ。状態は持たない。 | e2-micro 1台 / 月（us-west1, us-central1, us-east1） |
 | **forwarder** (Cloud Run) | INBOX の全メールを IMAP で取得 → Gmail API で insert → iCloud 側をゴミ箱へ移動。 | 200万リクエスト / 月 |
-| **Firestore** (Native, `(default)`) | メール単位の処理状態（claim / inserted / done …）を記録し、二重転送を防ぐ。 | 1 GiB, 書込 2万 / 日 |
 | **Secret Manager** | iCloud のアプリ用パスワード、Gmail OAuth のリフレッシュトークン。 | 6 アクティブバージョン、1万アクセス / 月 |
 | **Cloud Scheduler** | 30 分毎に `/sync` を叩く保険。watcher が落ちていても取りこぼさない。 | 3 ジョブ |
 | **Artifact Registry / Cloud Build** | コンテナイメージ（forwarder と watcher は同一イメージ）。 | 0.5 GB / 120 ビルド分 / 日 |
@@ -43,19 +44,24 @@ iCloud 標準の転送機能（SMTP 経由）はヘッダの内容によって G
    メールは「Gmail に insert 済み」かつ「iCloud でゴミ箱へ移動済み」になるまで INBOX に残ります。
    Gmail API や Cloud Run が落ちていてもメールは INBOX に残るだけで、復旧後に自動的に再処理されます。
    メール本文を別のストレージにコピーする必要はありません。
-2. **Firestore で冪等性を担保する。** メールは `UIDVALIDITY-UID` をキーに次の状態機械で管理します。
+2. **IMAP キーワードで冪等性を担保する。** 1 通ごとの処理は次の 3 ステップです。
 
    ```
-   pending ─claim─► processing ─insert OK─► inserted ─trash OK─► done
-                        │ 一時的エラー(5xx/429/ネットワーク) → pending (attempts+1)
-                        │ 恒久的エラー(400 等) / attempts 上限 → rejected → quarantined
+   INBOX のメール ─Gmail に insert─► キーワード $GmailInserted を付与 ─MOVE─► ゴミ箱
+                      │ 一時的エラー(5xx/429/ネットワーク) → INBOX に残して次回再試行
+                      │ 恒久的エラー(400 等)               → Forward-Failed フォルダへ退避
    ```
-   * insert 後・ゴミ箱移動前にクラッシュしても、次回は `inserted` 状態を見て **insert をスキップ** します。
-   * さらに Message-ID による `rfc822msgid:` 検索で Gmail 側の存在確認も行い、Firestore 書込前のクラッシュにも耐えます。
-   * 処理中はリース（既定 15 分）を取り、多重実行しても同じメールを同時に扱いません。
-     Cloud Run 自体も `max-instances=1, concurrency=1` で直列化しています。
+   * キーワード付与後・ゴミ箱移動前にクラッシュしても、次回はキーワードを見て **insert をスキップ** します。
+   * insert 後・キーワード付与前のクラッシュ（ごく短い窓）には、Message-ID による `rfc822msgid:` 検索で
+     Gmail 側の存在確認を行って備えます。
+   * 接続時に `PERMANENTFLAGS` に `\*` が含まれるか確認し、カスタムキーワードを保存できないサーバでは
+     転送を行いません（フェイルクローズ）。キーワード付与の応答も検証します。
+   * 多重実行は Cloud Run の `max-instances=1, concurrency=1` とプロセス内ロックで直列化しています。
+     IMAP には compare-and-set が無いため、デプロイ直後にリビジョンが一瞬重なった場合の二重投入は
+     Message-ID 検索だけが防波堤になります。
 3. **消失させない。** Gmail に恒久的に拒否されたメール（サイズ超過など）は削除せず、
    iCloud 上の `Forward-Failed` フォルダへ退避します。ゴミ箱に入るのは Gmail への投入が確認できたメールだけです。
+   一時的エラーは回数制限なく再試行します（メールは INBOX に残るだけなので安全です）。
 4. **二重の検出経路。** watcher の IDLE/ポーリングに加え、Cloud Scheduler が定期的に `/sync` を呼びます。
    watcher 側も INBOX にメールが残っている限り一定間隔（既定 10 分）で再トリガーします。
 
@@ -95,7 +101,7 @@ iCloud 標準の転送機能（SMTP 経由）はヘッダの内容によって G
 ```bash
 cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編集
 ./deploy/00_enable_apis.sh               # API 有効化
-./deploy/01_infra.sh                     # SA / IAM / Firestore / Artifact Registry
+./deploy/01_infra.sh                     # SA / IAM / Artifact Registry
 ./deploy/02_secrets.sh icloud            # アプリ用パスワードを入力
 ./deploy/02_secrets.sh gmail gmail-oauth.json
 ./deploy/03_build.sh                     # Cloud Build でイメージをビルド
@@ -119,11 +125,11 @@ gcloud run services logs read "$SERVICE_NAME" --region "$REGION" --limit 50
 gcloud logging read 'resource.type="gce_instance" AND jsonPayload.message:"Triggering"' --limit 20
 ```
 
-ローカルで一度だけ実行することもできます（Firestore の代わりにメモリを使う場合は `STORE_BACKEND=memory`）。
+ローカルで一度だけ実行することもできます。
 
 ```bash
 export ICLOUD_USER=... ICLOUD_PASSWORD=... GMAIL_OAUTH_JSON="$(cat gmail-oauth.json)"
-STORE_BACKEND=memory python -m mailtransporter.cli sync
+python -m mailtransporter.cli sync
 ```
 
 ## 設定（環境変数）
@@ -135,11 +141,8 @@ STORE_BACKEND=memory python -m mailtransporter.cli sync
 | `GMAIL_OAUTH_JSON` / `GMAIL_OAUTH_JSON_SECRET` | – | `{"client_id","client_secret","refresh_token"}` |
 | `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効 |
 | `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上） |
-| `MAX_ATTEMPTS` | `50` | 一時的エラーの再試行上限。超えると退避フォルダへ（0 で無制限） |
-| `LEASE_SECONDS` | `600` | 処理中リースの長さ |
+| `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム） |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
-| `RETENTION_DAYS` | `30` | Firestore ドキュメントの TTL |
-| `STORE_BACKEND` | `firestore` | `memory` にするとローカル検証用（再起動で重複の可能性あり） |
 | `FORWARDER_URL` | – | (watcher) Cloud Run の URL |
 | `RETRIGGER_INTERVAL` | `600` | (watcher) INBOX にメールが残っている場合の再トリガー間隔（秒） |
 | `IDLE_TIMEOUT` | `240` | (watcher) IMAP IDLE の 1 回の待機時間（秒） |
@@ -148,15 +151,17 @@ STORE_BACKEND=memory python -m mailtransporter.cli sync
 ## 運用メモ
 
 * **`Forward-Failed` フォルダ** は定期的に確認してください。ここに入るのは Gmail が受け付けなかったメール
-  （50 MB 超など）と、再試行上限に達したメールです。原因を解消して INBOX に戻せば再処理されます。
-* **Firestore の中身**: コレクション `forwarded_messages`、ドキュメント ID `UIDVALIDITY-UID`。
-  `status`, `attempts`, `last_error`, `gmail_id` で状況が分かります。30 日で自動削除されます。
+  （50 MB 超など）です。原因を解消して INBOX に戻せば再処理されます。
+* **INBOX に残り続けるメール**: 一時的エラーは無期限に再試行するため、特定のメールだけが Gmail に
+  5xx を返され続けると INBOX に残り続けます。ログの `transient Gmail failure` で確認できます。
+  手動で `Forward-Failed` などへ移せばキューから外れます。
+* **カスタムキーワード非対応の場合**: ログに `does not advertise support for custom keywords` と出て
+  転送は行われません。iCloud（`imap.mail.me.com`）は Apple Mail 用のキーワードを扱うため対応していますが、
+  別の IMAP サーバに向ける場合は確認してください。
 * **Secret Manager のアクセス回数**: Cloud Run はコールドスタート時にシークレットを読みます。
   Scheduler の間隔を極端に短くすると月 1 万回の無料枠を超え得るため、既定は 30 分にしています。
 * **外部 IP**: watcher VM は IMAP へ接続するため外部 IP を持ちます（Cloud NAT は有料）。
   e2-micro の無料枠には使用中の外部 IP 1 つが含まれますが、請求レポートで確認してください。
-* **UIDVALIDITY の変化**: iCloud 側でメールボックスが再構築されると UID が振り直されますが、
-  Message-ID による Gmail 側の存在確認で二重投入を防ぎます。
 * **リフレッシュトークンの失効** (`GmailAuthError`): OAuth 同意画面がテスト状態だと 7 日で失効します。
   再取得して `./deploy/02_secrets.sh gmail gmail-oauth.json` で更新し、Cloud Run を再デプロイしてください。
 
@@ -172,9 +177,8 @@ python -m pytest -q
 mailtransporter/
   config.py        環境変数 → 設定オブジェクト
   secrets.py       Secret Manager からの読み込み
-  imap_client.py   iCloud IMAP（fetch / move / IDLE）
+  imap_client.py   iCloud IMAP（fetch / keyword / move / IDLE）
   gmail_client.py  Gmail API（insert / ラベル / Message-ID 検索 / エラー分類）
-  store.py         処理状態ストア（Firestore / インメモリ）
   forwarder.py     中核ロジック（1 回の同期パス）
   server.py        Cloud Run 用 Flask アプリ（/sync, /healthz）
   watcher.py       GCE 用デーモン（IDLE 監視 → Cloud Run 呼び出し）

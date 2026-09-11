@@ -1,4 +1,17 @@
-"""Core sync loop: INBOX(iCloud) -> Gmail insert -> iCloud Trash, idempotently."""
+"""Core sync loop: INBOX(iCloud) -> Gmail insert -> iCloud Trash, idempotently.
+
+No external state store is involved.  Progress is recorded on the message
+itself with an IMAP keyword:
+
+    INBOX message ──insert into Gmail──► +$GmailInserted ──MOVE──► Trash
+
+* A message carrying the keyword has already been inserted, so a crash
+  between insert and move can only ever cause the move to be repeated.
+* A crash between insert and setting the keyword is covered by looking the
+  message's Message-ID up in Gmail before inserting.
+* Messages Gmail rejects permanently are moved to a separate IMAP folder so
+  they are never lost and never block the queue.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +20,8 @@ import email.policy
 import logging
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from typing import Callable
 
-from . import store as st
 from .gmail_client import (
     GmailAuthError,
     GmailClient,
@@ -18,9 +29,11 @@ from .gmail_client import (
     GmailPermanentError,
     GmailRetryableError,
 )
-from .imap_client import ICloudMailbox, MailboxError, MessageGone
+from .imap_client import FetchedMessage, ICloudMailbox, MailboxError, MessageGone
 
 log = logging.getLogger(__name__)
+
+DEFAULT_INSERTED_KEYWORD = "$GmailInserted"
 
 
 class AbortRun(Exception):
@@ -53,13 +66,8 @@ class SyncResult:
 class ForwarderOptions:
     label: str | None = "iCloud"
     failed_folder: str = "Forward-Failed"
-    max_attempts: int = 50
-    lease_seconds: int = 600
+    inserted_keyword: str = DEFAULT_INSERTED_KEYWORD
     time_budget_seconds: float = 480.0
-
-
-def message_key(uidvalidity: int, uid: int) -> str:
-    return f"{uidvalidity}-{uid}"
 
 
 def extract_message_id(raw: bytes) -> str | None:
@@ -74,7 +82,7 @@ def extract_message_id(raw: bytes) -> str | None:
     return value or None
 
 
-def gmail_labels_for(message, extra_label_ids: list[str]) -> list[str]:
+def gmail_labels_for(message: FetchedMessage, extra_label_ids: list[str]) -> list[str]:
     labels = ["INBOX"]
     if not message.seen:
         labels.append("UNREAD")
@@ -89,18 +97,14 @@ class Forwarder:
         self,
         mailbox_factory: Callable[[], ICloudMailbox],
         gmail_factory: Callable[[], GmailClient],
-        store: st.MessageStore,
         options: ForwarderOptions,
         *,
         clock: Callable[[], float] = time.monotonic,
-        now: Callable[[], datetime] = st.utcnow,
     ) -> None:
         self._mailbox_factory = mailbox_factory
         self._gmail_factory = gmail_factory
-        self._store = store
         self._options = options
         self._clock = clock
-        self._now = now
 
     # ------------------------------------------------------------------
     def run(self) -> SyncResult:
@@ -108,6 +112,7 @@ class Forwarder:
         result = SyncResult()
         try:
             with self._mailbox_factory() as mailbox:
+                mailbox.require_keywords()
                 gmail = self._gmail_factory()
                 extra_labels = [gmail.ensure_label(self._options.label)] if self._options.label else []
                 uids = mailbox.list_inbox_uids()
@@ -132,94 +137,67 @@ class Forwarder:
         return result
 
     # ------------------------------------------------------------------
-    def _process(self, uid: int, mailbox: ICloudMailbox, gmail: GmailClient, extra_labels: list[str], result: SyncResult) -> None:
-        key = message_key(mailbox.uidvalidity, uid)
-        previous = self._store.claim(
-            key,
-            uid=uid,
-            uidvalidity=mailbox.uidvalidity,
-            now=self._now(),
-            lease_seconds=self._options.lease_seconds,
-        )
-        if previous is None:
-            log.info("uid=%s is being processed elsewhere; skipping", uid)
+    def _process(
+        self,
+        uid: int,
+        mailbox: ICloudMailbox,
+        gmail: GmailClient,
+        extra_labels: list[str],
+        result: SyncResult,
+    ) -> None:
+        keyword = self._options.inserted_keyword
+        try:
+            message = mailbox.fetch_message(uid)
+        except MessageGone:
+            log.info("uid=%s vanished from INBOX before fetch; skipping", uid)
             result.skipped += 1
             return
+        except MailboxError as exc:
+            raise AbortRun(f"IMAP failure while fetching uid={uid}: {exc}") from exc
 
-        if previous.status in (st.REJECTED, st.QUARANTINED):
-            self._quarantine(key, uid, mailbox, result)
-            return
-
-        gmail_id = previous.gmail_id
-        if previous.status == st.DONE:
-            log.warning("uid=%s already marked done but still in INBOX; trashing again", uid)
-        elif gmail_id:
-            log.info("uid=%s already inserted as gmail_id=%s; skipping insert", uid, gmail_id)
+        if keyword in message.flags:
+            log.info("uid=%s already carries %s; skipping insert", uid, keyword)
         else:
             try:
-                gmail_id = self._insert(key, uid, mailbox, gmail, extra_labels)
-            except MessageGone:
-                log.info("uid=%s vanished from INBOX before fetch; skipping", uid)
-                self._store.mark_done(key)
-                result.skipped += 1
-                return
-            except MailboxError as exc:
-                self._store.mark_pending(key, error=str(exc))
-                result.retry_later += 1
-                raise AbortRun(f"IMAP failure while fetching uid={uid}: {exc}") from exc
+                gmail_id = self._insert(message, gmail, extra_labels)
             except GmailAuthError as exc:
-                self._store.mark_pending(key, error=str(exc))
-                result.retry_later += 1
                 raise AbortRun(str(exc)) from exc
             except GmailRetryableError as exc:
-                attempts = self._store.mark_pending(key, error=str(exc))
-                if self._options.max_attempts and attempts >= self._options.max_attempts:
-                    log.error("uid=%s exhausted %d attempts: %s", uid, attempts, exc)
-                    self._store.mark_rejected(key, error=f"attempts exhausted: {exc}")
-                    self._quarantine(key, uid, mailbox, result)
-                    return
-                log.warning("uid=%s transient Gmail failure (attempt %d): %s", uid, attempts, exc)
+                log.warning("uid=%s transient Gmail failure; will retry next run: %s", uid, exc)
                 result.retry_later += 1
                 return
             except GmailPermanentError as exc:
                 log.error("uid=%s permanently rejected by Gmail: %s", uid, exc)
-                self._store.mark_rejected(key, error=str(exc))
-                self._quarantine(key, uid, mailbox, result)
+                self._quarantine(uid, mailbox, result)
                 return
-            if previous.status != st.DONE:
-                result.forwarded += 1
+            try:
+                mailbox.add_keyword(uid, keyword)
+            except MailboxError as exc:
+                # Gmail has the message; the Message-ID lookup protects the next run.
+                raise AbortRun(f"IMAP failure while flagging uid={uid} (gmail_id={gmail_id}): {exc}") from exc
+            result.forwarded += 1
+            log.info("uid=%s inserted into Gmail as %s", uid, gmail_id)
 
         try:
             mailbox.move_to_trash(uid)
         except MailboxError as exc:
-            self._store.mark_pending(key, error=str(exc))
-            result.retry_later += 1
             raise AbortRun(f"IMAP failure while trashing uid={uid}: {exc}") from exc
-        self._store.mark_done(key)
         result.trashed += 1
-        log.info("uid=%s forwarded as gmail_id=%s and moved to Trash", uid, gmail_id)
+        log.info("uid=%s moved to Trash", uid)
 
-    def _insert(self, key: str, uid: int, mailbox: ICloudMailbox, gmail: GmailClient, extra_labels: list[str]) -> str:
-        message = mailbox.fetch_message(uid)
+    def _insert(self, message: FetchedMessage, gmail: GmailClient, extra_labels: list[str]) -> str:
         message_id = extract_message_id(message.raw)
-        gmail_id = None
         if message_id:
-            gmail_id = gmail.find_by_message_id(message_id)
-            if gmail_id:
-                log.info("uid=%s already exists in Gmail (%s) by Message-ID; not inserting", uid, gmail_id)
-        if not gmail_id:
-            gmail_id = gmail.insert_raw(message.raw, gmail_labels_for(message, extra_labels))
-        self._store.mark_inserted(key, gmail_id=gmail_id, message_id=message_id)
-        return gmail_id
+            existing = gmail.find_by_message_id(message_id)
+            if existing:
+                log.info("uid=%s already exists in Gmail (%s) by Message-ID; not inserting", message.uid, existing)
+                return existing
+        return gmail.insert_raw(message.raw, gmail_labels_for(message, extra_labels))
 
-    def _quarantine(self, key: str, uid: int, mailbox: ICloudMailbox, result: SyncResult) -> None:
+    def _quarantine(self, uid: int, mailbox: ICloudMailbox, result: SyncResult) -> None:
         try:
             mailbox.move_to_folder(uid, self._options.failed_folder)
         except MailboxError as exc:
-            self._store.mark_pending(key, error=str(exc))
-            result.retry_later += 1
             raise AbortRun(f"IMAP failure while quarantining uid={uid}: {exc}") from exc
-        self._store.mark_quarantined(key)
         result.quarantined += 1
         log.warning("uid=%s moved to %r", uid, self._options.failed_folder)
-

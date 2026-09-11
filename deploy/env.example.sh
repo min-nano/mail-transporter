@@ -2,7 +2,6 @@
 export PROJECT_ID="my-gcp-project"
 export REGION="us-central1"          # Cloud Run / Artifact Registry / Scheduler
 export ZONE="us-central1-a"          # e2-micro free tier: us-west1, us-central1, us-east1 only
-export FIRESTORE_LOCATION="nam5"
 
 export ICLOUD_USER="you@icloud.com"  # iCloud Mail address (Apple ID)
 export GMAIL_LABEL="iCloud"          # Gmail label added to forwarded mail ("" to disable)

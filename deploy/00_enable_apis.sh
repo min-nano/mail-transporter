@@ -7,7 +7,6 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
-  firestore.googleapis.com \
   secretmanager.googleapis.com \
   cloudscheduler.googleapis.com \
   gmail.googleapis.com \

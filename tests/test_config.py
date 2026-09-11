@@ -38,7 +38,19 @@ def test_forwarder_settings(monkeypatch):
     s = ForwarderSettings.from_env()
     assert s.icloud.host == "imap.mail.me.com"
     assert s.time_budget_seconds == 42
-    assert s.store_backend == "firestore"
+    assert s.inserted_keyword == "$GmailInserted"
+
+
+def test_forwarder_settings_rejects_bad_keyword(monkeypatch):
+    monkeypatch.setenv("ICLOUD_USER", "me@icloud.com")
+    monkeypatch.setenv("ICLOUD_PASSWORD", "app-pass")
+    monkeypatch.setenv("GMAIL_OAUTH_JSON", json.dumps({"client_id": "a", "client_secret": "b", "refresh_token": "c"}))
+    monkeypatch.setenv("INSERTED_KEYWORD", "\\Seen")
+    with pytest.raises(ConfigError):
+        ForwarderSettings.from_env()
+    monkeypatch.setenv("INSERTED_KEYWORD", "has space")
+    with pytest.raises(ConfigError):
+        ForwarderSettings.from_env()
 
 
 def test_watcher_settings_requires_url(monkeypatch):

@@ -65,26 +65,21 @@ class GmailSettings:
 class ForwarderSettings:
     icloud: ICloudSettings
     gmail: GmailSettings
-    firestore_collection: str = "forwarded_messages"
     failed_folder: str = "Forward-Failed"
-    max_attempts: int = 50
-    lease_seconds: int = 600
+    inserted_keyword: str = "$GmailInserted"
     time_budget_seconds: int = 480
-    retention_days: int = 30
-    store_backend: str = "firestore"
 
     @classmethod
     def from_env(cls) -> "ForwarderSettings":
+        keyword = os.environ.get("INSERTED_KEYWORD", "$GmailInserted").strip()
+        if not keyword or any(c in keyword for c in ' ()\\{"%*]') or not keyword.isascii():
+            raise ConfigError("INSERTED_KEYWORD must be a plain ASCII IMAP atom such as $GmailInserted")
         return cls(
             icloud=ICloudSettings.from_env(),
             gmail=GmailSettings.from_env(),
-            firestore_collection=os.environ.get("FIRESTORE_COLLECTION", "forwarded_messages"),
             failed_folder=os.environ.get("FAILED_FOLDER", "Forward-Failed"),
-            max_attempts=env_int("MAX_ATTEMPTS", 50),
-            lease_seconds=env_int("LEASE_SECONDS", 600),
+            inserted_keyword=keyword,
             time_budget_seconds=env_int("TIME_BUDGET_SECONDS", 480),
-            retention_days=env_int("RETENTION_DAYS", 30),
-            store_backend=os.environ.get("STORE_BACKEND", "firestore").strip().lower(),
         )
 
 

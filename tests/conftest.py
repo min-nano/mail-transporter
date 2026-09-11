@@ -5,7 +5,6 @@ import pytest
 from mailtransporter.forwarder import Forwarder, ForwarderOptions
 from mailtransporter.gmail_client import GmailError
 from mailtransporter.imap_client import FetchedMessage, MailboxError, MessageGone
-from mailtransporter.store import InMemoryMessageStore
 
 
 class FakeMailbox:
@@ -17,10 +16,23 @@ class FakeMailbox:
         self.uidvalidity = uidvalidity
         self.folders: dict[str, list[int]] = {"Deleted Messages": []}
         self.supports_idle = True
+        self.supports_keywords = True
         self.fail_fetch: set[int] = set()
         self.fail_move: set[int] = set()
+        self.fail_keyword: set[int] = set()
         self.connected = False
         self.idle_events: list[bool] = []
+
+    def require_keywords(self):
+        if not self.supports_keywords:
+            raise MailboxError("no keyword support")
+
+    def add_keyword(self, uid, keyword):
+        if uid in self.fail_keyword:
+            raise MailboxError("boom keyword")
+        if uid not in self.inbox:
+            raise MailboxError(f"uid={uid} not in INBOX")
+        self.flags[uid] = self.flags.get(uid, frozenset()) | {keyword}
 
     def __enter__(self):
         self.connected = True
@@ -91,11 +103,6 @@ def gmail():
     return FakeGmail()
 
 
-@pytest.fixture
-def store():
-    return InMemoryMessageStore()
-
-
 class FakeClock:
     def __init__(self):
         self.t = 1000.0
@@ -112,6 +119,6 @@ def clock():
     return FakeClock()
 
 
-def make_forwarder(mailbox, gmail, store, clock=None, **opts):
-    options = ForwarderOptions(**{"label": "iCloud", "max_attempts": 3, "time_budget_seconds": 100, **opts})
-    return Forwarder(lambda: mailbox, lambda: gmail, store, options, **({"clock": clock} if clock else {}))
+def make_forwarder(mailbox, gmail, clock=None, **opts):
+    options = ForwarderOptions(**{"label": "iCloud", "time_budget_seconds": 100, **opts})
+    return Forwarder(lambda: mailbox, lambda: gmail, options, **({"clock": clock} if clock else {}))

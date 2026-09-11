@@ -63,6 +63,7 @@ class ICloudMailbox:
         self._trash_folder: str | None = None
         self.uidvalidity: int = 0
         self.supports_idle = False
+        self.supports_keywords = False
 
     # -- lifecycle -----------------------------------------------------
     def __enter__(self) -> "ICloudMailbox":
@@ -82,10 +83,25 @@ class ICloudMailbox:
         self._client = client
         self.uidvalidity = int(info.get(b"UIDVALIDITY", 0))
         self.supports_idle = client.has_capability("IDLE")
+        # RFC 3501: "\*" in PERMANENTFLAGS means the server accepts new keywords.
+        permanent = info.get(b"PERMANENTFLAGS", ())
+        self.supports_keywords = any(_decode(f) == "\\*" for f in permanent)
         log.info(
-            "IMAP connected host=%s user=%s uidvalidity=%s idle=%s",
-            self.host, self.user, self.uidvalidity, self.supports_idle,
+            "IMAP connected host=%s user=%s uidvalidity=%s idle=%s keywords=%s",
+            self.host, self.user, self.uidvalidity, self.supports_idle, self.supports_keywords,
         )
+
+    def require_keywords(self) -> None:
+        """Fail closed when the server cannot persist custom keywords.
+
+        The forwarder records "already inserted into Gmail" as an IMAP keyword;
+        without it a crash between insert and trash could duplicate mail.
+        """
+        if not self.supports_keywords:
+            raise MailboxError(
+                "IMAP server does not advertise support for custom keywords "
+                "(PERMANENTFLAGS lacks \\*); refusing to forward"
+            )
 
     def close(self) -> None:
         client, self._client = self._client, None
@@ -126,6 +142,20 @@ class ICloudMailbox:
         return FetchedMessage(uid=uid, raw=bytes(item[b"BODY[]"]), flags=flags)
 
     # -- mutations -----------------------------------------------------
+    def add_keyword(self, uid: int, keyword: str) -> None:
+        """Set a custom keyword (e.g. ``$GmailInserted``) on ``uid``.
+
+        The server's reply is checked so that a silently ignored keyword is
+        treated as a failure rather than a success.
+        """
+        try:
+            response = self.client.add_flags([uid], [keyword.encode("ascii")])
+        except Exception as exc:  # noqa: BLE001
+            raise MailboxError(f"IMAP STORE +FLAGS {keyword} failed for uid={uid}: {exc}") from exc
+        flags = {_decode(f) for f in (response.get(uid) or ())}
+        if uid in response and keyword not in flags:
+            raise MailboxError(f"IMAP server did not persist keyword {keyword} on uid={uid}")
+
     def trash_folder(self) -> str:
         if self._trash_folder:
             return self._trash_folder
