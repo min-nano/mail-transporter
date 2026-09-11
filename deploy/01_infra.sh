@@ -19,9 +19,11 @@ for role in roles/logging.logWriter roles/monitoring.metricWriter roles/artifact
 done
 
 # Cloud Build staging bucket (gcloud builds submit uploads the source here).
+# Source tarballs are tiny but would otherwise accumulate forever.
 if ! gcloud storage buckets describe "gs://${BUILD_BUCKET}" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://${BUILD_BUCKET}" --location "${REGION}" --uniform-bucket-level-access
 fi
+gcloud storage buckets update "gs://${BUILD_BUCKET}" --lifecycle-file "$(dirname "$0")/build-bucket-lifecycle.json" >/dev/null
 
 # Health check + firewall rule for the watcher MIG's autohealing.
 if ! gcloud compute health-checks describe "${HEALTH_CHECK}" >/dev/null 2>&1; then
@@ -49,7 +51,7 @@ if ! gcloud compute firewall-rules describe "${VM_NAME}-allow-iap-ssh" >/dev/nul
     --source-ranges 35.235.240.0/20 --target-tags "${VM_NAME}" --priority 900
 fi
 
-# Artifact Registry repository + cleanup policy (keep the image count tiny: 0.5 GB free).
+# Artifact Registry repository + cleanup policy (current + previous image only: 0.5 GB free).
 if ! gcloud artifacts repositories describe "${AR_REPO}" --location "${REGION}" >/dev/null 2>&1; then
   gcloud artifacts repositories create "${AR_REPO}" --repository-format docker --location "${REGION}"
 fi

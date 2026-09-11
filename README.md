@@ -35,7 +35,7 @@ IMAP キーワード（`$GmailInserted`）として記録します。
 | **watcher** (GCE e2-micro, サイズ 1 の MIG) | iCloud の INBOX を IMAP IDLE（非対応時はポーリング）で監視し、新着を検出したら Cloud Run を呼ぶ。状態は持たない。MIG の自動修復が `/healthz` を監視し、停止・削除・ハング時に VM を作り直す。 | e2-micro 1台 / 月（us-west1, us-central1, us-east1）。MIG とヘルスチェックは無料 |
 | **forwarder** (Cloud Run) | INBOX の全メールを IMAP で取得 → Gmail API で insert → iCloud 側をゴミ箱へ移動。 | 200万リクエスト / 月 |
 | **Secret Manager** | iCloud のアプリ用パスワード、Gmail OAuth のリフレッシュトークン。 | 6 アクティブバージョン、1万アクセス / 月 |
-| **Artifact Registry / Cloud Build** | コンテナイメージ（forwarder と watcher は同一イメージ）。 | 0.5 GB / 120 ビルド分 / 日 |
+| **Artifact Registry / Cloud Build** | コンテナイメージ（forwarder と watcher は同一イメージ）。直近 2 世代だけ保持。 | 0.5 GB / 120 ビルド分 / 日 |
 
 ### 「確実に転送する」ための設計
 
@@ -226,6 +226,26 @@ python -m mailtransporter.cli sync
   実行してください（CI が `pyproject.toml` との乖離を検出します）。
 * **リフレッシュトークンの失効** (`GmailAuthError`): OAuth 同意画面がテスト状態だと 7 日で失効します。
   再取得して `./deploy/02_secrets.sh gmail gmail-oauth.json` で更新し、Cloud Run を再デプロイしてください。
+
+## 課金の目安
+
+すべて Always Free 枠で動く設計ですが、枠は「使用量」で決まるので、運用量によっては超え得ます。
+超えた場合も単価は小さいものの、気付かないうちに課金されないよう **予算アラート** の設定を勧めます
+（`gcloud billing budgets create --billing-account=<ID> --display-name=mail-transporter --budget-amount=1USD --threshold-rule=percent=0.5`。
+請求先アカウントの権限が必要です）。
+
+| 項目 | 無料枠 | この構成での消費 | 超えやすい条件 |
+|---|---|---|---|
+| Cloud Run の外向き通信（北米） | 1 GiB / 月 | Gmail API への insert で **転送するメールの総バイト数**がそのまま消費される。iCloud からの取得は内向きで無料 | 大きな添付付きメールが多い月。超過分は 1 GB あたり約 $0.12 |
+| Cloud Run のリクエスト / CPU | 200 万リクエスト、18 万 vCPU 秒 / 月 | 1 通あたり数秒 | 実質到達しない |
+| Cloud Build | 120 ビルド分 / 日 | 1 回 1〜3 分（`cloudbuild.yaml` で前回イメージをレイヤーキャッシュに使う） | 1 日に数十回 main へ push する場合 |
+| Artifact Registry | 0.5 GB | イメージは直近 2 世代のみ保持。ベースと依存のレイヤーは世代間で共有される | 依存を頻繁に変える場合。`gcloud artifacts docker images list --format='value(package,version)'` でサイズ確認 |
+| GCE e2-micro | 1 台 / 月（us-west1, us-central1, us-east1） | 常時 1 台。IMAP の通信は IDLE と UID 一覧だけで本文は取得しない | リージョンを変えた場合 |
+| Secret Manager | 6 バージョン、1 万アクセス / 月 | Cloud Run のコールドスタートと watcher 起動時のみ | 実質到達しない |
+| Cloud Logging | 50 GiB / 月 | 1 通あたり数行 | 実質到達しない |
+
+運用開始後は Cloud Run の「送信バイト数」（`run.googleapis.com/container/network/sent_bytes_count`）と
+Artifact Registry の使用量を月に一度確認してください。
 
 ## 開発
 
