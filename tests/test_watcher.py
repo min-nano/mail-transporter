@@ -101,3 +101,49 @@ def test_forgets_uids_that_left_the_inbox():
     mailbox.inbox[1] = b"x"  # same uid cannot normally reappear, but be safe
     loop.step(mailbox)
     assert notifier.calls == 2
+
+
+def test_run_forever_keeps_heartbeat_alive_and_reconnects():
+    from mailtransporter.config import ICloudSettings, WatcherSettings
+    from mailtransporter.health import Heartbeat
+    from mailtransporter.imap_client import MailboxError
+
+    clock = FakeClock()
+    settings = WatcherSettings(
+        icloud=ICloudSettings(user="u", password="p", timeout=10),
+        forwarder_url="https://x",
+        idle_timeout=30,
+        request_timeout=100,
+    )
+    hb = Heartbeat(startup_grace=1, clock=clock)
+    notifier = FakeNotifier()
+    slept: list[float] = []
+    mailbox = FakeMailbox({1: b"x"})
+    sessions: list[FakeMailbox] = []
+
+    class DroppingMailbox(FakeMailbox):
+        """IDLE raises once so run_forever has to reconnect."""
+
+        def idle_wait(self, timeout):
+            if not self.idle_events:
+                raise MailboxError("dropped")
+            return self.idle_events.pop(0)
+
+    def factory():
+        mb = DroppingMailbox(dict(mailbox.inbox))
+        mb.idle_events = [True]
+        sessions.append(mb)
+        return mb
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock.advance(seconds)
+
+    from mailtransporter.watcher import run_forever
+
+    run_forever(settings, notifier, heartbeat=hb, mailbox_factory=factory, sleep=sleep, max_sessions=2)
+
+    assert len(sessions) == 2            # reconnected after the IMAP drop
+    assert notifier.calls == 1           # the loop survives reconnects: same UID is not re-reported
+    assert hb.ok()                       # heartbeat was refreshed before every blocking call
+    assert slept and slept[0] == 5.0     # reconnect backoff

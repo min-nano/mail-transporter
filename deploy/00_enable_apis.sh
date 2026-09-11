@@ -8,7 +8,6 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
-  cloudscheduler.googleapis.com \
   gmail.googleapis.com \
   iam.googleapis.com \
   logging.googleapis.com

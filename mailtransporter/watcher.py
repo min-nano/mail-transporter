@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .config import WatcherSettings
+from .health import Heartbeat, serve as serve_health
 from .imap_client import ICloudMailbox, MailboxError
 
 log = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ SHORT_DELAY = 5.0      # forwarder reported remaining work: call again soon
 BUSY_DELAY = 20.0      # forwarder is mid-run: check back shortly
 BASE_BACKOFF = 30.0
 MAX_BACKOFF = 600.0
+HEARTBEAT_MARGIN = 120.0  # slack added to every blocking operation's budget
 
 
 @dataclass(frozen=True)
@@ -79,11 +81,15 @@ class WatchLoop:
         notifier,
         *,
         retrigger_interval: float = 600.0,
+        request_timeout: float = 900.0,
         clock: Callable[[], float] = time.monotonic,
+        heartbeat: Heartbeat | None = None,
     ) -> None:
         self._notifier = notifier
         self.retrigger_interval = retrigger_interval
+        self.request_timeout = request_timeout
         self._clock = clock
+        self._heartbeat = heartbeat or Heartbeat(clock=clock)
         self._notified: set[int] = set()
         self._last_trigger_at: float | None = None
         self._not_before: float = 0.0
@@ -110,7 +116,9 @@ class WatchLoop:
             return self._not_before - now
 
         log.info("Triggering forwarder: %d message(s) in INBOX (%d new)", len(uids), len(new_uids))
+        self._heartbeat.touch(self.request_timeout + HEARTBEAT_MARGIN, "calling forwarder")
         result = self._notifier.trigger()
+        self._heartbeat.touch(HEARTBEAT_MARGIN, "forwarder answered")
         if result.ok:
             self._failures = 0
             self._notified = uids
@@ -132,33 +140,68 @@ class WatchLoop:
         return delay
 
 
-def run_forever(settings: WatcherSettings, notifier, *, sleep: Callable[[float], None] = time.sleep) -> None:
-    loop = WatchLoop(notifier, retrigger_interval=settings.retrigger_interval)
+def default_mailbox_factory(settings: WatcherSettings) -> Callable[[], ICloudMailbox]:
+    def factory() -> ICloudMailbox:
+        return ICloudMailbox(
+            settings.icloud.host,
+            settings.icloud.port,
+            settings.icloud.user,
+            settings.icloud.password,
+            timeout=settings.icloud.timeout,
+            readonly=True,
+        )
+
+    return factory
+
+
+def run_forever(
+    settings: WatcherSettings,
+    notifier,
+    *,
+    heartbeat: Heartbeat,
+    mailbox_factory: Callable[[], ICloudMailbox] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    max_sessions: int | None = None,
+) -> None:
+    """Keep one IMAP session alive and react to INBOX changes.
+
+    ``max_sessions`` bounds the number of (re)connect attempts and exists
+    only for tests; production runs until the process is killed.
+    """
+    mailbox_factory = mailbox_factory or default_mailbox_factory(settings)
+    loop = WatchLoop(
+        notifier,
+        retrigger_interval=settings.retrigger_interval,
+        request_timeout=settings.request_timeout,
+        heartbeat=heartbeat,
+    )
+    connect_budget = settings.icloud.timeout * 3 + HEARTBEAT_MARGIN
     backoff = 5.0
-    while True:
+    sessions = 0
+    while max_sessions is None or sessions < max_sessions:
+        sessions += 1
         try:
-            with ICloudMailbox(
-                settings.icloud.host,
-                settings.icloud.port,
-                settings.icloud.user,
-                settings.icloud.password,
-                timeout=settings.icloud.timeout,
-                readonly=True,
-            ) as mailbox:
+            heartbeat.touch(connect_budget, "connecting to IMAP")
+            with mailbox_factory() as mailbox:
                 backoff = 5.0
                 while True:
+                    heartbeat.touch(settings.icloud.timeout + HEARTBEAT_MARGIN, "listing INBOX")
                     delay = loop.step(mailbox)
                     if delay is not None:
+                        heartbeat.touch(delay + HEARTBEAT_MARGIN, "sleeping")
                         sleep(delay)
                         continue
                     if mailbox.supports_idle:
+                        heartbeat.touch(settings.idle_timeout + settings.icloud.timeout + HEARTBEAT_MARGIN, "IMAP IDLE")
                         mailbox.idle_wait(settings.idle_timeout)
                     else:
+                        heartbeat.touch(settings.poll_interval + HEARTBEAT_MARGIN, "polling")
                         sleep(settings.poll_interval)
         except MailboxError as exc:
             log.warning("IMAP session lost (%s); reconnecting in %.0fs", exc, backoff)
         except Exception:  # noqa: BLE001 - keep the daemon alive
             log.exception("Unexpected watcher error; reconnecting in %.0fs", backoff)
+        heartbeat.touch(backoff + HEARTBEAT_MARGIN, "reconnect backoff")
         sleep(backoff)
         backoff = min(backoff * 2, 300.0)
 
@@ -168,9 +211,11 @@ def main() -> None:
 
     configure_logging()
     settings = WatcherSettings.from_env()
+    heartbeat = Heartbeat(startup_grace=settings.health_startup_grace)
+    serve_health(heartbeat, settings.health_port)
     notifier = CloudRunNotifier(settings.forwarder_url, timeout=settings.request_timeout)
     log.info("Watcher starting: forwarder=%s retrigger=%ss", settings.forwarder_url, settings.retrigger_interval)
-    run_forever(settings, notifier)
+    run_forever(settings, notifier, heartbeat=heartbeat)
 
 
 if __name__ == "__main__":

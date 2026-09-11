@@ -9,7 +9,6 @@ create_sa() {
 }
 create_sa mail-forwarder "mail-transporter Cloud Run forwarder"
 create_sa mail-watcher   "mail-transporter GCE watcher"
-create_sa mail-scheduler "mail-transporter Cloud Scheduler"
 
 # Watcher: write logs/metrics from the VM and pull the container image.
 for role in roles/logging.logWriter roles/monitoring.metricWriter roles/artifactregistry.reader; do

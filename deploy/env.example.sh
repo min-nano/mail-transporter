@@ -1,6 +1,6 @@
 # Copy to deploy/env.sh (git-ignored) and fill in.
 export PROJECT_ID="my-gcp-project"
-export REGION="us-central1"          # Cloud Run / Artifact Registry / Scheduler
+export REGION="us-central1"          # Cloud Run / Artifact Registry
 export ZONE="us-central1-a"          # e2-micro free tier: us-west1, us-central1, us-east1 only
 
 export ICLOUD_USER="you@icloud.com"  # iCloud Mail address (Apple ID)
@@ -13,7 +13,8 @@ export AR_REPO="mail-transporter"
 export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/mail-transporter"
 export RUN_SA="mail-forwarder@${PROJECT_ID}.iam.gserviceaccount.com"
 export WATCHER_SA="mail-watcher@${PROJECT_ID}.iam.gserviceaccount.com"
-export SCHEDULER_SA="mail-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
 export SECRET_ICLOUD="icloud-password"
 export SECRET_GMAIL="gmail-oauth"
-export SWEEP_SCHEDULE="*/30 * * * *"  # Cloud Scheduler safety-net sweep
+export HEALTH_CHECK="mail-watcher-health"
+export HEALTH_PORT="8080"             # watcher /healthz port (MIG autohealing)
+export HEALTH_INITIAL_DELAY="300"     # seconds a fresh VM gets before autohealing judges it

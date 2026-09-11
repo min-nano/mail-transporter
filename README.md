@@ -11,14 +11,14 @@ iCloud 標準の転送機能（SMTP 経由）はヘッダの内容によって G
 ```
  iCloud Mail (IMAP)                     Google Cloud (すべて無料枠内)
  ┌──────────────┐   IMAP IDLE / poll   ┌───────────────────────────┐
- │    INBOX     │◄─────────────────────│ GCE e2-micro  "watcher"   │
- │  (= キュー)  │                      │  mailtransporter.watcher  │
+ │    INBOX     │◄─────────────────────│ GCE e2-micro  "watcher"   │◄── MIG 自動修復
+ │  (= キュー)  │                      │  mailtransporter.watcher  │    (/healthz 監視)
  └──────┬───────┘                      └────────────┬──────────────┘
         │                                           │ POST /sync (OIDC)
         │  IMAP fetch / move                        ▼
         │                              ┌───────────────────────────┐
-        └─────────────────────────────►│ Cloud Run  "forwarder"    │◄── Cloud Scheduler
-                                       │  mailtransporter.server   │    (30分毎の保険)
+        └─────────────────────────────►│ Cloud Run  "forwarder"    │
+                                       │  mailtransporter.server   │
                                        └────────────┬──────────────┘
                                                     │ Gmail API insert
                                                     ▼
@@ -32,10 +32,9 @@ IMAP キーワード（`$GmailInserted`）として記録します。
 
 | コンポーネント | 役割 | 無料枠 |
 |---|---|---|
-| **watcher** (GCE e2-micro) | iCloud の INBOX を IMAP IDLE（非対応時はポーリング）で監視し、新着を検出したら Cloud Run を呼ぶ。状態は持たない。 | e2-micro 1台 / 月（us-west1, us-central1, us-east1） |
+| **watcher** (GCE e2-micro, サイズ 1 の MIG) | iCloud の INBOX を IMAP IDLE（非対応時はポーリング）で監視し、新着を検出したら Cloud Run を呼ぶ。状態は持たない。MIG の自動修復が `/healthz` を監視し、停止・削除・ハング時に VM を作り直す。 | e2-micro 1台 / 月（us-west1, us-central1, us-east1）。MIG とヘルスチェックは無料 |
 | **forwarder** (Cloud Run) | INBOX の全メールを IMAP で取得 → Gmail API で insert → iCloud 側をゴミ箱へ移動。 | 200万リクエスト / 月 |
 | **Secret Manager** | iCloud のアプリ用パスワード、Gmail OAuth のリフレッシュトークン。 | 6 アクティブバージョン、1万アクセス / 月 |
-| **Cloud Scheduler** | 30 分毎に `/sync` を叩く保険。watcher が落ちていても取りこぼさない。 | 3 ジョブ |
 | **Artifact Registry / Cloud Build** | コンテナイメージ（forwarder と watcher は同一イメージ）。 | 0.5 GB / 120 ビルド分 / 日 |
 
 ### 「確実に転送する」ための設計
@@ -62,8 +61,11 @@ IMAP キーワード（`$GmailInserted`）として記録します。
 3. **消失させない。** Gmail に恒久的に拒否されたメール（サイズ超過など）は削除せず、
    iCloud 上の `Forward-Failed` フォルダへ退避します。ゴミ箱に入るのは Gmail への投入が確認できたメールだけです。
    一時的エラーは回数制限なく再試行します（メールは INBOX に残るだけなので安全です）。
-4. **二重の検出経路。** watcher の IDLE/ポーリングに加え、Cloud Scheduler が定期的に `/sync` を呼びます。
-   watcher 側も INBOX にメールが残っている限り一定間隔（既定 10 分）で再トリガーします。
+4. **watcher は自動修復する。** watcher は監視ループの各ブロッキング操作（IDLE、forwarder 呼び出し、スリープ）の
+   直前に「この操作は最大 N 秒かかる」とハートビートを更新し、`/healthz` はその猶予内なら 200 を返します。
+   サイズ 1 のマネージドインスタンスグループ（MIG）がこれを監視し、VM の停止・削除・プロセスのハングを検出すると
+   VM を作り直します。復旧までの間、メールは INBOX に溜まるだけで失われません。
+   Gmail 側の障害に対しては、watcher が INBOX にメールが残っている限り一定間隔（既定 10 分）で再トリガーします。
 
 ### Gmail 側の見え方
 
@@ -106,8 +108,7 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 ./deploy/02_secrets.sh gmail gmail-oauth.json
 ./deploy/03_build.sh                     # Cloud Build でイメージをビルド
 ./deploy/04_deploy_forwarder.sh          # Cloud Run
-./deploy/05_deploy_watcher.sh            # GCE e2-micro (Container-Optimized OS)
-./deploy/06_scheduler.sh                 # Cloud Scheduler の保険ジョブ
+./deploy/05_deploy_watcher.sh            # GCE e2-micro の MIG (Container-Optimized OS) + 自動修復
 ```
 
 コード更新後は `./deploy/release.sh` でビルドと両方のロールアウトをまとめて行えます。
@@ -147,6 +148,8 @@ python -m mailtransporter.cli sync
 | `RETRIGGER_INTERVAL` | `600` | (watcher) INBOX にメールが残っている場合の再トリガー間隔（秒） |
 | `IDLE_TIMEOUT` | `240` | (watcher) IMAP IDLE の 1 回の待機時間（秒） |
 | `POLL_INTERVAL` | `60` | (watcher) IDLE 非対応時のポーリング間隔（秒） |
+| `HEALTH_PORT` | `8080` | (watcher) `/healthz` を待ち受けるポート。MIG のヘルスチェックが叩く |
+| `HEALTH_STARTUP_GRACE` | `300` | (watcher) 起動直後に healthy とみなす猶予（秒） |
 
 ## 運用メモ
 
@@ -158,8 +161,11 @@ python -m mailtransporter.cli sync
 * **カスタムキーワード非対応の場合**: ログに `does not advertise support for custom keywords` と出て
   転送は行われません。iCloud（`imap.mail.me.com`）は Apple Mail 用のキーワードを扱うため対応していますが、
   別の IMAP サーバに向ける場合は確認してください。
-* **Secret Manager のアクセス回数**: Cloud Run はコールドスタート時にシークレットを読みます。
-  Scheduler の間隔を極端に短くすると月 1 万回の無料枠を超え得るため、既定は 30 分にしています。
+* **自動修復の確認**: `gcloud compute instance-groups managed list-instances mail-watcher --zone $ZONE`
+  で `HEALTH_STATE` と `ACTION` が見えます。修復が繰り返される場合はコンテナのログ（`gcloud logging read`）で
+  起動失敗の原因を確認してください。ヘルスチェックはコンテナ起動後 `HEALTH_INITIAL_DELAY`（既定 5 分）は判定しません。
+* **Secret Manager のアクセス回数**: Cloud Run はコールドスタート時、watcher は起動時にシークレットを読みます。
+  通常のメール量では月 1 万回の無料枠に遠く及びません。
 * **外部 IP**: watcher VM は IMAP へ接続するため外部 IP を持ちます（Cloud NAT は有料）。
   e2-micro の無料枠には使用中の外部 IP 1 つが含まれますが、請求レポートで確認してください。
 * **リフレッシュトークンの失効** (`GmailAuthError`): OAuth 同意画面がテスト状態だと 7 日で失効します。
@@ -182,6 +188,7 @@ mailtransporter/
   forwarder.py     中核ロジック（1 回の同期パス）
   server.py        Cloud Run 用 Flask アプリ（/sync, /healthz）
   watcher.py       GCE 用デーモン（IDLE 監視 → Cloud Run 呼び出し）
+  health.py        watcher のハートビートと /healthz（MIG 自動修復用）
   cli.py           ローカル実行用
 deploy/            gcloud によるデプロイスクリプト
 scripts/           Gmail OAuth リフレッシュトークン取得

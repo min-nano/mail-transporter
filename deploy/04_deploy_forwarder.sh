@@ -18,9 +18,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --set-secrets "ICLOUD_PASSWORD=${SECRET_ICLOUD}:latest,GMAIL_OAUTH_JSON=${SECRET_GMAIL}:latest" \
   --quiet
 
-# Allow the watcher VM and Cloud Scheduler to invoke the service.
-for sa in "${WATCHER_SA}" "${SCHEDULER_SA}"; do
-  gcloud run services add-iam-policy-binding "${SERVICE_NAME}" --region "${REGION}" \
-    --member "serviceAccount:${sa}" --role roles/run.invoker --quiet >/dev/null
-done
+# Allow the watcher VM to invoke the service.
+gcloud run services add-iam-policy-binding "${SERVICE_NAME}" --region "${REGION}" \
+  --member "serviceAccount:${WATCHER_SA}" --role roles/run.invoker --quiet >/dev/null
 echo "Forwarder URL: $(service_url)"

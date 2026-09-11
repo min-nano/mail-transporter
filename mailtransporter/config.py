@@ -91,6 +91,8 @@ class WatcherSettings:
     idle_timeout: int = 240
     poll_interval: int = 60
     request_timeout: int = 900
+    health_port: int = 8080
+    health_startup_grace: int = 300
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -102,4 +104,6 @@ class WatcherSettings:
             idle_timeout=env_int("IDLE_TIMEOUT", 240),
             poll_interval=env_int("POLL_INTERVAL", 60),
             request_timeout=env_int("REQUEST_TIMEOUT", 900),
+            health_port=env_int("HEALTH_PORT", 8080),
+            health_startup_grace=env_int("HEALTH_STARTUP_GRACE", 300),
         )
