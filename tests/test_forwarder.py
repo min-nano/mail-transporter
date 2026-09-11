@@ -66,7 +66,8 @@ def test_keyword_failure_after_insert_parks_message_instead_of_looping(mailbox, 
     result = make_forwarder(mailbox, gmail).run()
     assert result.ok
     assert len(gmail.inserted) == 2            # both delivered exactly once
-    assert mailbox.folders["Forward-Failed"] == [1]  # parked, never trashed
+    assert mailbox.folders["Forward-Unverified"] == [1]  # parked apart from real failures, never trashed
+    assert "Forward-Failed" not in mailbox.folders
     assert mailbox.folders["Deleted Messages"] == [2]
     assert result.quarantined == 1 and result.trashed == 1
 

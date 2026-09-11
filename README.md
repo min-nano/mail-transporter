@@ -53,7 +53,7 @@ IMAP キーワード（`$GmailInserted`）として記録します。
    * キーワード付与後・ゴミ箱移動前にクラッシュしても、次回はキーワードを見て **insert をスキップ** します。
    * insert 後・キーワード付与前（IMAP 往復 1 回分の窓）にクラッシュすると、次回もう一度 insert されて
      Gmail に **重複** が生じます。消失ではなく重複に倒す設計です。サーバがキーワード付与を拒否した場合は
-     `Forward-Failed` へ退避し、重複が毎回増え続けないようにします。Gmail 検索による重複排除は
+     `Forward-Unverified` へ退避し、重複が毎回増え続けないようにします。Gmail 検索による重複排除は
      メール読み取りスコープが必要になるうえ、偽装した Message-ID で配送を抑止できる経路になるため行いません。
    * 接続時に `PERMANENTFLAGS` に `\*` が含まれるか確認し、カスタムキーワードを保存できないサーバでは
      転送を行いません（フェイルクローズ）。キーワード付与はサーバの応答（無ければ再取得）で確認します。
@@ -176,7 +176,8 @@ python -m mailtransporter.cli sync
 | `ICLOUD_PASSWORD` / `ICLOUD_PASSWORD_SECRET` | – | アプリ用パスワード。後者は Secret Manager のリソース名（watcher が使用） |
 | `GMAIL_OAUTH_JSON` / `GMAIL_OAUTH_JSON_SECRET` | – | `{"client_id","client_secret","refresh_token"}` |
 | `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効（デプロイスクリプトでは `none` を指定） |
-| `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上） |
+| `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上）。**Gmail には入っていない** |
+| `UNVERIFIED_FOLDER` | `Forward-Unverified` | Gmail への投入は成功したがキーワードを記録できなかったメールの退避先。**Gmail には入っている**ので INBOX に戻すと重複する |
 | `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます |
 | `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効）。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正やサイズ超過の連続など）は早めに解消すること |
 | `ALLOWED_INVOKER_SA` | – | (forwarder) `/sync` を呼べるサービスアカウント。Cloud Run の IAM に加えてアプリ側でも ID トークンを検証する。未設定なら検証しない（ローカル用） |
@@ -192,7 +193,10 @@ python -m mailtransporter.cli sync
 ## 運用メモ
 
 * **`Forward-Failed` フォルダ** は定期的に確認してください。ここに入るのは Gmail が受け付けなかったメール
-  （50 MB 超など）です。原因を解消して INBOX に戻せば再処理されます。
+  （50 MB 超など）で、Gmail には入っていません。原因を解消して INBOX に戻せば再処理されます。
+* **`Forward-Unverified` フォルダ** には、Gmail への投入は成功したのに iCloud 側へキーワードを記録できなかった
+  メールが入ります。こちらは Gmail に届いているので、INBOX に戻すと重複します。Gmail 側を確認したうえで
+  ゴミ箱へ移すか、そのまま残してください。
 * **INBOX に残り続けるメール**: 一時的エラーは無期限に再試行するため、特定のメールだけが Gmail に
   5xx を返され続けると INBOX に残り続けます。ログの `transient Gmail failure` で確認できます。
   手動で `Forward-Failed` などへ移せばキューから外れます。

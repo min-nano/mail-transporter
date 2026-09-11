@@ -26,6 +26,11 @@ ALLOWED_INVOKER_SA = os.environ.get("ALLOWED_INVOKER_SA", "").strip()
 EXPECTED_AUDIENCE = os.environ.get("EXPECTED_AUDIENCE", "").strip()
 _transport = None
 _transport_lock = threading.Lock()
+if ALLOWED_INVOKER_SA and not EXPECTED_AUDIENCE:
+    log.warning(
+        "ALLOWED_INVOKER_SA is set but EXPECTED_AUDIENCE is empty: the caller's "
+        "identity is verified but the token audience is not"
+    )
 
 
 def _google_transport():

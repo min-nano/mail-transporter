@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "google-auth-oauthlib>=1.2"]
+dev = ["pytest>=8", "google-auth-oauthlib>=1.2", "pip-tools>=7.5,<8"]
 
 [tool.setuptools.packages.find]
 include = ["mailtransporter*"]

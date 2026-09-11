@@ -38,6 +38,7 @@ def build_forwarder(settings: ForwarderSettings | None = None) -> Forwarder:
     options = ForwarderOptions(
         label=settings.gmail.label,
         failed_folder=settings.failed_folder,
+        unverified_folder=settings.unverified_folder,
         inserted_keyword=settings.inserted_keyword,
         time_budget_seconds=settings.time_budget_seconds,
         rejection_threshold=settings.rejection_threshold,

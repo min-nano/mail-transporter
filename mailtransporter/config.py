@@ -76,6 +76,7 @@ class ForwarderSettings:
     icloud: ICloudSettings
     gmail: GmailSettings
     failed_folder: str = "Forward-Failed"
+    unverified_folder: str = "Forward-Unverified"
     inserted_keyword: str = "$GmailInserted"
     time_budget_seconds: int = 480
     rejection_threshold: int = 3
@@ -94,6 +95,7 @@ class ForwarderSettings:
             icloud=ICloudSettings.from_env(),
             gmail=GmailSettings.from_env(),
             failed_folder=os.environ.get("FAILED_FOLDER", "Forward-Failed"),
+            unverified_folder=os.environ.get("UNVERIFIED_FOLDER", "Forward-Unverified"),
             inserted_keyword=keyword,
             time_budget_seconds=env_int("TIME_BUDGET_SECONDS", 480),
             rejection_threshold=env_int("REJECTION_THRESHOLD", 3),

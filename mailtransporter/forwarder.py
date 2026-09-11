@@ -11,8 +11,9 @@ itself with an IMAP keyword:
   round trip) is resolved towards a duplicate in Gmail, never towards loss.
   Deduplicating via Gmail search would require a read scope on the mailbox
   and would let a forged Message-ID suppress delivery, so it is not done.
-  If the keyword is refused outright, the message is parked in the failed
-  folder so the duplicate count stays at one.
+  If the keyword is refused outright, the message is parked in a separate
+  "unverified" folder so the duplicate count stays at one and it is never
+  mistaken for mail that still needs forwarding.
 * Messages Gmail rejects permanently are moved to a separate IMAP folder so
   they are never lost and never block the queue. Rejections are only acted
   on at the end of a run: if every message was rejected and nothing got
@@ -70,7 +71,11 @@ class SyncResult:
 @dataclass(frozen=True)
 class ForwarderOptions:
     label: str | None = "iCloud"
+    # Gmail rejected the message; it is NOT in Gmail. Moving it back to INBOX retries it.
     failed_folder: str = "Forward-Failed"
+    # Gmail accepted the message but the keyword could not be recorded; it IS in
+    # Gmail. Moving it back to INBOX would insert a duplicate.
+    unverified_folder: str = "Forward-Unverified"
     inserted_keyword: str = DEFAULT_INSERTED_KEYWORD
     time_budget_seconds: float = 480.0
     # Circuit breaker: this many permanent rejections in one run with no
@@ -195,10 +200,10 @@ class Forwarder:
             except MailboxError as exc:
                 # Gmail already has the message but we cannot record that on
                 # the iCloud copy. Leaving it in INBOX would insert a fresh
-                # duplicate on every run, so park it in the failed folder
+                # duplicate on every run, so park it in the unverified folder
                 # instead (never the Trash: the keyword is the only proof).
                 log.error("uid=%s inserted as %s but the keyword could not be set: %s", uid, gmail_id, exc)
-                self._quarantine(uid, mailbox, result)
+                self._quarantine(uid, mailbox, result, folder=self._options.unverified_folder)
                 return
 
         try:
@@ -208,10 +213,11 @@ class Forwarder:
         result.trashed += 1
         log.info("uid=%s moved to Trash", uid)
 
-    def _quarantine(self, uid: int, mailbox: ICloudMailbox, result: SyncResult) -> None:
+    def _quarantine(self, uid: int, mailbox: ICloudMailbox, result: SyncResult, *, folder: str | None = None) -> None:
+        folder = folder or self._options.failed_folder
         try:
-            mailbox.move_to_folder(uid, self._options.failed_folder)
+            mailbox.move_to_folder(uid, folder)
         except MailboxError as exc:
             raise AbortRun(f"IMAP failure while quarantining uid={uid}: {exc}") from exc
         result.quarantined += 1
-        log.warning("uid=%s moved to %r", uid, self._options.failed_folder)
+        log.warning("uid=%s moved to %r", uid, folder)
