@@ -22,20 +22,38 @@ _forwarder_lock = threading.Lock()
 # binding is ever loosened, the app itself still only accepts identity
 # tokens issued to the configured service account.
 ALLOWED_INVOKER_SA = os.environ.get("ALLOWED_INVOKER_SA", "").strip()
+# The service's own URL: ID tokens minted for any other audience are refused.
+EXPECTED_AUDIENCE = os.environ.get("EXPECTED_AUDIENCE", "").strip()
+_transport = None
+_transport_lock = threading.Lock()
 
 
-def verify_invoker(authorization_header: str | None, allowed_sa: str) -> bool:
-    """Return True when the bearer token is a Google-signed ID token for ``allowed_sa``."""
+def _google_transport():
+    """One shared transport so Google's signing certificates are cached across calls."""
+    global _transport
+    with _transport_lock:
+        if _transport is None:
+            import google.auth.transport.requests
+
+            _transport = google.auth.transport.requests.Request()
+        return _transport
+
+
+def verify_invoker(authorization_header: str | None, allowed_sa: str, audience: str | None = None) -> bool:
+    """Return True when the bearer token is a Google-signed ID token for ``allowed_sa``.
+
+    ``audience`` (the Cloud Run service URL) is checked when given, so a
+    token issued for another service cannot be replayed here.
+    """
     if not allowed_sa:
         return True
     if not authorization_header or not authorization_header.startswith("Bearer "):
         return False
-    import google.auth.transport.requests
     import google.oauth2.id_token
 
     try:
         claims = google.oauth2.id_token.verify_oauth2_token(
-            authorization_header[len("Bearer "):], google.auth.transport.requests.Request()
+            authorization_header[len("Bearer "):], _google_transport(), audience=audience or None
         )
     except Exception as exc:  # noqa: BLE001 - any verification failure is a denial
         log.warning("Rejected /sync call: %s", exc)
@@ -58,7 +76,7 @@ def healthz():
 
 @app.post("/sync")
 def sync():
-    if not verify_invoker(request.headers.get("Authorization"), ALLOWED_INVOKER_SA):
+    if not verify_invoker(request.headers.get("Authorization"), ALLOWED_INVOKER_SA, EXPECTED_AUDIENCE):
         return jsonify({"status": "forbidden"}), 403
     # Cloud Run is deployed with concurrency=1 / max-instances=1, but guard
     # anyway: two overlapping passes would fight over the same UIDs.

@@ -52,7 +52,8 @@ IMAP キーワード（`$GmailInserted`）として記録します。
    ```
    * キーワード付与後・ゴミ箱移動前にクラッシュしても、次回はキーワードを見て **insert をスキップ** します。
    * insert 後・キーワード付与前（IMAP 往復 1 回分の窓）にクラッシュすると、次回もう一度 insert されて
-     Gmail に **重複** が生じます。消失ではなく重複に倒す設計です。Gmail 検索による重複排除は
+     Gmail に **重複** が生じます。消失ではなく重複に倒す設計です。サーバがキーワード付与を拒否した場合は
+     `Forward-Failed` へ退避し、重複が毎回増え続けないようにします。Gmail 検索による重複排除は
      メール読み取りスコープが必要になるうえ、偽装した Message-ID で配送を抑止できる経路になるため行いません。
    * 接続時に `PERMANENTFLAGS` に `\*` が含まれるか確認し、カスタムキーワードを保存できないサーバでは
      転送を行いません（フェイルクローズ）。キーワード付与はサーバの応答（無ければ再取得）で確認します。
@@ -177,8 +178,9 @@ python -m mailtransporter.cli sync
 | `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効（デプロイスクリプトでは `none` を指定） |
 | `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上） |
 | `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます |
-| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効） |
+| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効）。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正やサイズ超過の連続など）は早めに解消すること |
 | `ALLOWED_INVOKER_SA` | – | (forwarder) `/sync` を呼べるサービスアカウント。Cloud Run の IAM に加えてアプリ側でも ID トークンを検証する。未設定なら検証しない（ローカル用） |
+| `EXPECTED_AUDIENCE` | – | (forwarder) ID トークンの `aud` に要求する値（Cloud Run のサービス URL）。デプロイスクリプトが自動設定 |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
 | `FORWARDER_URL` | – | (watcher) Cloud Run の URL |
 | `RETRIGGER_INTERVAL` | `600` | (watcher) INBOX にメールが残っている場合の再トリガー間隔（秒） |
@@ -216,7 +218,8 @@ python -m mailtransporter.cli sync
   すべてのロールアウトに人の承認を挟めます。
 * **ビルドの再現性**: ベースイメージはダイジェスト固定、依存はハッシュ付きの `requirements.txt` から
   `--require-hashes` でインストールします。更新は Dependabot が PR を出します。依存を変えたときは
-  Python 3.12 で `pip-compile --generate-hashes --strip-extras -o requirements.txt pyproject.toml` を実行してください。
+  Python 3.12 で `pip-compile --no-header --generate-hashes --strip-extras -o requirements.txt pyproject.toml` を
+  実行してください（CI が `pyproject.toml` との乖離を検出します）。
 * **リフレッシュトークンの失効** (`GmailAuthError`): OAuth 同意画面がテスト状態だと 7 日で失効します。
   再取得して `./deploy/02_secrets.sh gmail gmail-oauth.json` で更新し、Cloud Run を再デプロイしてください。
 

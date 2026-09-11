@@ -4,8 +4,8 @@
 #
 # Reproducible: the base image is pinned by digest and every dependency is
 # installed from the hash-locked requirements.txt (regenerate with
-# `pip-compile --generate-hashes --strip-extras -o requirements.txt pyproject.toml`
-# under Python 3.12). Dependabot keeps both current.
+# `pip-compile --no-header --generate-hashes --strip-extras -o requirements.txt pyproject.toml`
+# under Python 3.12; CI fails when the two drift). Dependabot keeps both current.
 FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 ENV PYTHONUNBUFFERED=1 \

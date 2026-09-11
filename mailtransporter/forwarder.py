@@ -11,6 +11,8 @@ itself with an IMAP keyword:
   round trip) is resolved towards a duplicate in Gmail, never towards loss.
   Deduplicating via Gmail search would require a read scope on the mailbox
   and would let a forged Message-ID suppress delivery, so it is not done.
+  If the keyword is refused outright, the message is parked in the failed
+  folder so the duplicate count stays at one.
 * Messages Gmail rejects permanently are moved to a separate IMAP folder so
   they are never lost and never block the queue. Rejections are only acted
   on at the end of a run: if every message was rejected and nothing got
@@ -186,14 +188,18 @@ class Forwarder:
             except GmailPermanentError as exc:
                 rejected.append((uid, str(exc)))
                 return
+            result.forwarded += 1
+            log.info("uid=%s inserted into Gmail as %s", uid, gmail_id)
             try:
                 mailbox.add_keyword(uid, keyword)
             except MailboxError as exc:
-                # Gmail already has the message. The next run will insert it
-                # again (a duplicate the user can delete) rather than risk loss.
-                raise AbortRun(f"IMAP failure while flagging uid={uid} (gmail_id={gmail_id}): {exc}") from exc
-            result.forwarded += 1
-            log.info("uid=%s inserted into Gmail as %s", uid, gmail_id)
+                # Gmail already has the message but we cannot record that on
+                # the iCloud copy. Leaving it in INBOX would insert a fresh
+                # duplicate on every run, so park it in the failed folder
+                # instead (never the Trash: the keyword is the only proof).
+                log.error("uid=%s inserted as %s but the keyword could not be set: %s", uid, gmail_id, exc)
+                self._quarantine(uid, mailbox, result)
+                return
 
         try:
             mailbox.move_to_trash(uid)

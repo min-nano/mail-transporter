@@ -34,10 +34,12 @@ def test_sync_requires_matching_invoker(monkeypatch):
     calls = []
     monkeypatch.setattr(server, "get_forwarder", lambda: StubForwarder(SyncResult(forwarded=1)))
     monkeypatch.setattr(server, "ALLOWED_INVOKER_SA", "watcher@p.iam.gserviceaccount.com")
+    monkeypatch.setattr(server, "EXPECTED_AUDIENCE", "https://svc.run.app")
 
     import google.oauth2.id_token
 
-    def fake_verify(token, request):
+    def fake_verify(token, request, audience=None):
+        assert audience == "https://svc.run.app"  # aud is enforced
         calls.append(token)
         if token == "good":
             return {"email": "watcher@p.iam.gserviceaccount.com", "email_verified": True}

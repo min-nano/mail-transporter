@@ -59,18 +59,29 @@ def test_trash_failure_after_insert_is_not_inserted_twice(mailbox, gmail):
     assert len(gmail.inserted) == 1
 
 
-def test_keyword_failure_after_insert_aborts_and_next_run_duplicates_rather_than_loses(mailbox, gmail):
+def test_keyword_failure_after_insert_parks_message_instead_of_looping(mailbox, gmail):
     mailbox.inbox[1] = make_raw("<x@example.com>")
+    mailbox.inbox[2] = make_raw("<y@example.com>")
     mailbox.fail_keyword.add(1)
-    first = make_forwarder(mailbox, gmail).run()
-    assert not first.ok and "flagging" in first.error
-    assert len(gmail.inserted) == 1
-    assert 1 in mailbox.inbox  # never trashed without the keyword
+    result = make_forwarder(mailbox, gmail).run()
+    assert result.ok
+    assert len(gmail.inserted) == 2            # both delivered exactly once
+    assert mailbox.folders["Forward-Failed"] == [1]  # parked, never trashed
+    assert mailbox.folders["Deleted Messages"] == [2]
+    assert result.quarantined == 1 and result.trashed == 1
 
-    mailbox.fail_keyword.clear()
-    second = make_forwarder(mailbox, gmail).run()
-    assert second.ok and second.trashed == 1
-    assert len(gmail.inserted) == 2  # a duplicate in Gmail, not a lost mail
+    # nothing left in INBOX: no duplicate is produced on the next run
+    assert make_forwarder(mailbox, gmail).run().listed == 0
+    assert len(gmail.inserted) == 2
+
+
+def test_keyword_and_quarantine_failure_aborts_run(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    mailbox.fail_keyword.add(1)
+    mailbox.fail_move.add(1)
+    result = make_forwarder(mailbox, gmail).run()
+    assert not result.ok and "quarantining" in result.error
+    assert 1 in mailbox.inbox and len(gmail.inserted) == 1
 
 
 def test_keyword_match_is_case_insensitive(mailbox, gmail):
