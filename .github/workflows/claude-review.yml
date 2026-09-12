@@ -90,32 +90,12 @@ jobs:
             cat > "$RUNNER_TEMP/pr-tools/pr-$sub" <<EOF
           #!/usr/bin/env bash
           set -euo pipefail
-          # gh に届いてよいフラグはこの許可リストだけ。--body-file / -F は
-          # ランナー上の任意ファイル（/proc/self/environ を含む）の中身をそのまま
-          # PR コメントとして公開でき、--repo / -R は投稿先を別リポジトリへ向け替え
-          # られる。どちらも投稿そのものは正規の出力チャンネルなので、外部送信の禁止
-          # （WebFetch/curl を渡さない）では防げない。拒否リストだと未知のフラグを
-          # 取りこぼすため、載っていないフラグはすべて弾く。
-          for arg in "\$@"; do
-            case "\$arg" in
-              -*)
-                name=\${arg%%=*}
-                case "$flags" in
-                  *" \$name "*) ;;
-                  *) echo "pr-$sub: refusing flag \$name" >&2; exit 64 ;;
-                esac
-                ;;
-            esac
-          done
-          # 本文にこのジョブの資格情報が混じっていたら投稿しない。Read で読めた内容を
+          # 投稿本文にこのジョブの資格情報が混じっていたら投稿しない。Read で読めた内容を
           # --body に貼り付ける経路への最後の防波堤。
-          for arg in "\$@"; do
-            case "\$arg" in
-              -*) continue ;;
-            esac
+          check_secret() {
             for secret in "\${CLAUDE_CODE_OAUTH_TOKEN:-}" "\${GITHUB_TOKEN:-}" "\${GH_TOKEN:-}"; do
               if [ -n "\$secret" ]; then
-                case "\$arg" in
+                case "\$1" in
                   *"\$secret"*)
                     echo "pr-$sub: refusing to post a body containing a credential" >&2
                     exit 65
@@ -123,6 +103,40 @@ jobs:
                 esac
               fi
             done
+          }
+          # gh に届いてよいフラグはこの許可リストだけ。--body-file / -F は
+          # ランナー上の任意ファイル（/proc/self/environ を含む）の中身をそのまま
+          # PR コメントとして公開でき、--repo / -R は投稿先を別リポジトリへ向け替え
+          # られる。どちらも投稿そのものは正規の出力チャンネルなので、外部送信の禁止
+          # （WebFetch/curl を渡さない）では防げない。拒否リストだと未知のフラグを
+          # 取りこぼすため、載っていないフラグはすべて弾く。
+          # 値を取るフラグの次の引数は値なので、フラグ判定にかけない。かけてしまうと
+          # ハイフンで始まるレビュー本文（Markdown の箇条書きなど）が未知フラグ扱いに
+          # なり、投稿そのものが失敗する（安全網が黙って無効化される）。
+          expect_value=""
+          for arg in "\$@"; do
+            if [ -n "\$expect_value" ]; then
+              expect_value=""
+              check_secret "\$arg"
+              continue
+            fi
+            case "\$arg" in
+              -*)
+                name=\${arg%%=*}
+                case "$flags" in
+                  *" \$name "*) ;;
+                  *) echo "pr-$sub: refusing flag \$name" >&2; exit 64 ;;
+                esac
+                if [ "\$arg" = "\$name" ]; then
+                  case "\$name" in
+                    --body|--json) expect_value=1 ;;
+                  esac
+                else
+                  check_secret "\${arg#*=}"
+                fi
+                ;;
+              *) check_secret "\$arg" ;;
+            esac
           done
           exec gh pr $sub "$PR_NUMBER" "\$@"
           EOF
