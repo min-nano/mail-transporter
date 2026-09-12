@@ -9,6 +9,9 @@ name: Claude Review
 #     シークレットを受け取れず、かつ下の `if` で明示的に除外するので、第三者が PR を投げても
 #     このリポジトリの権限やトークンを奪うことはできません。
 #   * ワークフロー既定の権限は空。ジョブに contents:read と pull-requests:write だけを与えます。
+#     github_token にジョブ既定の GITHUB_TOKEN を明示的に渡すので、Action は OIDC 経由の
+#     App トークン取得を行いません（id-token:write は不要で、Claude GitHub App の
+#     インストールも要りません）。Claude が使えるのはこのジョブに与えた権限だけです。
 #   * Claude に渡す許可ツールは読み取りとコメント投稿に限定し、Write/Edit や任意の Bash は
 #     与えません。PR の差分・本文・コメントは「他人が書ける入力」なので、プロンプト側でも
 #     指示ではなくデータとして扱うよう明示しています。
@@ -59,6 +62,9 @@ jobs:
       - uses: anthropics/claude-code-action@0a8d3c9443bbff909ab973b6a17a340b913f229f  # v1.0.221
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # ジョブの GITHUB_TOKEN をそのまま使う。渡さないと Action は OIDC トークンを
+          # App トークンに交換しようとして id-token:write を要求する。
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           # 進捗コメントを 1 つに集約し、PR にコメントが溜まり続けないようにする。
           use_sticky_comment: true
           prompt: |

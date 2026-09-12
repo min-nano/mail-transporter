@@ -174,6 +174,10 @@ Claude Pro / Max のサブスクリプションをそのまま使うので、API
   第三者が PR 経由でトークンやリポジトリの権限を引き出すことはできません。
 * ワークフロー既定の権限は空で、レビュージョブにだけ `contents: read` と `pull-requests: write` を
   与えます。チェックアウトは `persist-credentials: false` です。
+* Action には `github_token` としてジョブ既定の `GITHUB_TOKEN` を明示的に渡します。これを省くと
+  Action は OIDC トークンを Claude GitHub App のトークンに交換しようとして `id-token: write` を
+  要求します。明示的に渡すことでその経路を使わず、権限はこのジョブに与えた 2 つだけに収まり、
+  Claude GitHub App のインストールも不要になります。
 * Claude に許可するのは読み取りと `gh pr` のコメント／レビュー投稿だけで、`Write` / `Edit` や
   任意の `Bash` は渡しません。PR の本文や差分に書かれた文言は「指示」ではなく「データ」として
   扱うようプロンプトで明示しています。
@@ -184,6 +188,10 @@ Claude Pro / Max のサブスクリプションをそのまま使うので、API
 > **注意**: Claude の `--approve` は GitHub 上では通常の承認レビューです。ブランチ保護で必須承認数を
 > 設けている場合、Claude の承認だけでマージできてしまわないよう、Code Owners のレビューを必須にするなど
 > 人の承認が別途必要な設定にしてください。
+>
+> なお `GITHUB_TOKEN` による承認は、Settings → Actions → General の
+> **Allow GitHub Actions to create and approve pull requests** が無効だと拒否されます（既定は無効）。
+> その場合 Claude は `gh pr comment` にフォールバックし、判定はコメント本文の先頭行に出ます。
 
 ### 4. 動作確認
 
