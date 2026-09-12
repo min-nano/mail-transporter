@@ -150,7 +150,7 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 
 ### 3c. PR を Claude に自動レビューさせる（任意）
 
-`.github/workflows/claude-review.yml` が、この リポジトリ内のブランチから開かれた PR に対して
+`.github/workflows/claude-review.yml` が、このリポジトリ内のブランチから開かれた PR に対して
 [Claude Code Action](https://github.com/anthropics/claude-code-action) を走らせ、セキュリティと
 コストを重点にレビューします。指摘は可能な限りインラインコメント、行に紐づかないものだけを
 レビュー本文にまとめ、最後に **承認 / 非承認** の判定を付けます。
