@@ -178,9 +178,16 @@ Claude Pro / Max のサブスクリプションをそのまま使うので、API
   Action は OIDC トークンを Claude GitHub App のトークンに交換しようとして `id-token: write` を
   要求します。明示的に渡すことでその経路を使わず、権限はこのジョブに与えた 2 つだけに収まり、
   Claude GitHub App のインストールも不要になります。
-* Claude に許可するのは読み取りと `gh pr` のコメント／レビュー投稿だけで、`Write` / `Edit` や
-  任意の `Bash` は渡しません。PR の本文や差分に書かれた文言は「指示」ではなく「データ」として
-  扱うようプロンプトで明示しています。
+* Claude に許可するのは読み取りと、この PR 番号を焼き込んだ投稿用ラッパー 4 つだけです。
+  `gh` 自体も `Write` / `Edit` / `WebFetch` も渡しません。許可パターンはプレフィックス一致なので、
+  PR 番号を Claude の引数にすると `Bash(gh pr review 3:*)` が `gh pr review 30 --approve` にも
+  一致してしまいます。番号をラッパー側に持たせることで、対象 PR の固定が文字列一致の挙動に
+  依存しなくなります。
+* allowedTools はサンドボックスではなくベストエフォートの制限です。すり抜けられた場合に備えて、
+  外部送信の経路を持たせない（`WebFetch` / `WebSearch` を禁止し `curl` / `wget` も許可しない）、
+  ジョブの権限をこのリポジトリの PR コメントだけに絞る、という二重の封じ込めをかけています。
+* PR の本文や差分に書かれた文言は「指示」ではなく「データ」として扱うようプロンプトで
+  明示しています。
 * 同じ PR への連続 push は `concurrency` で古い実行を打ち切り、ジョブには `timeout-minutes: 20` を
   置いているので、ハングやリトライで実行時間とサブスクリプションの利用枠を浪費しません。
   draft の PR と Dependabot の PR はレビューしません（後者はシークレットを受け取れないため）。
@@ -191,7 +198,7 @@ Claude Pro / Max のサブスクリプションをそのまま使うので、API
 >
 > なお `GITHUB_TOKEN` による承認は、Settings → Actions → General の
 > **Allow GitHub Actions to create and approve pull requests** が無効だと拒否されます（既定は無効）。
-> その場合 Claude は `gh pr comment` にフォールバックし、判定はコメント本文の先頭行に出ます。
+> その場合 Claude はコメント投稿にフォールバックし、判定はコメント本文の先頭行に出ます。
 
 ### 4. 動作確認
 
