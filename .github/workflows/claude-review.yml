@@ -24,7 +24,9 @@ name: Claude Review
 #     GITHUB_TOKEN の pull-requests:write はリポジトリ内の全 PR に効くため、対象 PR を固定
 #     しないと、万一プロンプトインジェクションが通ったときにレビュー対象外の PR を承認・
 #     コメントする経路が残ります。番号は github.event.pull_request.number（PR 作者が
-#     書き換えられない数値）で、Claude の引数には一切現れません。
+#     書き換えられない数値）で、Claude の引数には一切現れません。ラッパーは渡せる
+#     フラグも許可リストで絞ります（--body-file でランナー上のファイルを PR に公開する、
+#     --repo で投稿先を変える、といった経路を塞ぐため）。
 
 on:
   pull_request:
@@ -79,9 +81,32 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/pr-tools"
           for sub in view diff comment review; do
+            case "$sub" in
+              view) flags=" --json --comments " ;;
+              diff) flags=" " ;;
+              comment) flags=" --body " ;;
+              review) flags=" --approve --request-changes --comment --body " ;;
+            esac
             cat > "$RUNNER_TEMP/pr-tools/pr-$sub" <<EOF
           #!/usr/bin/env bash
           set -euo pipefail
+          # gh に届いてよいフラグはこの許可リストだけ。--body-file / -F は
+          # ランナー上の任意ファイル（/proc/self/environ を含む）の中身をそのまま
+          # PR コメントとして公開でき、--repo / -R は投稿先を別リポジトリへ向け替え
+          # られる。どちらも投稿そのものは正規の出力チャンネルなので、外部送信の禁止
+          # （WebFetch/curl を渡さない）では防げない。拒否リストだと未知のフラグを
+          # 取りこぼすため、載っていないフラグはすべて弾く。
+          for arg in "\$@"; do
+            case "\$arg" in
+              -*)
+                name=\${arg%%=*}
+                case "$flags" in
+                  *" \$name "*) ;;
+                  *) echo "pr-$sub: refusing flag \$name" >&2; exit 64 ;;
+                esac
+                ;;
+            esac
+          done
           exec gh pr $sub "$PR_NUMBER" "\$@"
           EOF
             chmod 0755 "$RUNNER_TEMP/pr-tools/pr-$sub"
