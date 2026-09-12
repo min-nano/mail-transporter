@@ -185,6 +185,11 @@ Claude Pro / Max のサブスクリプションをそのまま使うので、API
   依存しなくなります。ラッパーは渡せるフラグも許可リストで絞ります。`--body-file` を通すと、
   ランナー上の任意ファイル（`/proc/self/environ` を含む）の中身を PR コメントとして公開できて
   しまい、投稿自体は正規の出力チャンネルなので `curl` の禁止では防げないためです。
+* `Read` / `Grep` / `Glob` は `blockReadsOutsideWorkingDirectories` と `Read` の deny ルールで
+  チェックアウト内に閉じ込めます。範囲を絞らないと、`/proc/self/environ` などを読んで中身を
+  `--body` に貼り付け、PR コメントとして公開できてしまうためです（`--body-file` を塞いでも
+  同じことが `--body` でできます）。加えてラッパーは、投稿本文にこのジョブの
+  `CLAUDE_CODE_OAUTH_TOKEN` / `GITHUB_TOKEN` が含まれていたら投稿を拒否します。
 * allowedTools はサンドボックスではなくベストエフォートの制限です。すり抜けられた場合に備えて、
   外部送信の経路を持たせない（`WebFetch` / `WebSearch` を禁止し `curl` / `wget` も許可しない）、
   ジョブの権限をこのリポジトリの PR コメントだけに絞る、という二重の封じ込めをかけています。

@@ -107,6 +107,23 @@ jobs:
                 ;;
             esac
           done
+          # 本文にこのジョブの資格情報が混じっていたら投稿しない。Read で読めた内容を
+          # --body に貼り付ける経路への最後の防波堤。
+          for arg in "\$@"; do
+            case "\$arg" in
+              -*) continue ;;
+            esac
+            for secret in "\${CLAUDE_CODE_OAUTH_TOKEN:-}" "\${GITHUB_TOKEN:-}" "\${GH_TOKEN:-}"; do
+              if [ -n "\$secret" ]; then
+                case "\$arg" in
+                  *"\$secret"*)
+                    echo "pr-$sub: refusing to post a body containing a credential" >&2
+                    exit 65
+                    ;;
+                esac
+              fi
+            done
+          done
           exec gh pr $sub "$PR_NUMBER" "\$@"
           EOF
             chmod 0755 "$RUNNER_TEMP/pr-tools/pr-$sub"
@@ -118,6 +135,24 @@ jobs:
           # ジョブの GITHUB_TOKEN をそのまま使う。渡さないと Action は OIDC トークンを
           # App トークンに交換しようとして id-token:write を要求する。
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Read / Grep / Glob 自体はチェックアウト内を読むために必要だが、範囲を絞らないと
+          # ランナー上の任意のファイル（/proc/self/environ など）を読んで、その中身を
+          # --body に貼り付けて PR コメントとして公開できる。投稿は正規の出力チャンネル
+          # なので WebFetch/curl の禁止では防げない。作業ディレクトリの外を読ませない。
+          # パスルールは Read()/Edit() しか参照されない（Glob()/Grep() のルールは無視される）
+          # ため、ここは Read の deny と blockReadsOutsideWorkingDirectories で押さえる。
+          settings: |
+            {
+              "permissions": {
+                "blockReadsOutsideWorkingDirectories": true,
+                "deny": [
+                  "Read(//proc/**)",
+                  "Read(//sys/**)",
+                  "Read(//etc/**)",
+                  "Read(~/**)"
+                ]
+              }
+            }
           # 進捗コメントを 1 つに集約し、PR にコメントが溜まり続けないようにする。
           use_sticky_comment: true
           prompt: |
