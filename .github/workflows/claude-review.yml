@@ -276,8 +276,14 @@ jobs:
                 ]
               }
             }
-          # 進捗コメントを 1 つに集約し、PR にコメントが溜まり続けないようにする。
-          use_sticky_comment: true
+          # use_sticky_comment は設定しない。prompt を渡すとこの Action は agent モードで
+          # 動き、tag モードの進捗トラッキングコメント自体を作らないので効果がない
+          # （src/modes/agent/index.ts が "bypasses ... comment tracking" と明記）。
+          # track_progress も有効にしないこと。有効にすると tag モードになり、
+          # 進捗コメントが投稿される。そのコメントはツール入力を生の JSON で描画する
+          # ため（src/entrypoints/format-turns.ts の JSON.stringify(toolInput)）、
+          # Bash に渡したコマンド文字列がそのまま PR に載る。ラッパーの資格情報検査も
+          # 判定書式の強制もこの経路には掛からない。
           prompt: |
             あなたはこのリポジトリ（iCloud → Gmail のメール転送基盤）の PR レビュアーです。
             REPO: ${{ github.repository }}
