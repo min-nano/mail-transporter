@@ -85,7 +85,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pr-tools"
           for sub in view diff comment review; do
             case "$sub" in
-              view) flags=" --json --comments " ;;
+              view) flags=" --json " ;;
               diff) flags=" " ;;
               comment) flags=" --body " ;;
               review) flags=" --approve --request-changes --body " ;;
@@ -173,7 +173,11 @@ jobs:
               --approve) want="**判定: 承認 (APPROVE)**" ;;
               *) want="**判定: 非承認 (REQUEST CHANGES)**" ;;
             esac
-            case "\$body" in
+            trimmed=\$body
+            while [ "\${trimmed#[[:space:]]}" != "\$trimmed" ]; do
+              trimmed=\${trimmed#[[:space:]]}
+            done
+            case "\$trimmed" in
               "\$want"*) ;;
               *)
                 echo "pr-review: the body must start with \$want" >&2
@@ -205,6 +209,14 @@ jobs:
           # なので WebFetch/curl の禁止では防げない。作業ディレクトリの外を読ませない。
           # パスルールは Read()/Edit() しか参照されない（Glob()/Grep() のルールは無視される）
           # ため、ここは Read の deny と blockReadsOutsideWorkingDirectories で押さえる。
+          # deny に ~/** とは書けない。GitHub ホストランナーでは HOME が /home/runner、
+          # チェックアウトが /home/runner/work/<repo>/<repo> で、ホームがワークスペースの
+          # 祖先になるため、~/** はレビュー対象のファイルまで全部塞いでしまう（実際に
+          # README すら読めず permission denied が 14 件出た）。個別の機微パスだけ挙げる。
+          # なお CLAUDE_CODE_OAUTH_TOKEN の漏洩は GITHUB_TOKEN より影響が大きい
+          # （リポジトリに閉じず、ユーザ個人のサブスクリプションの資格情報のため）。
+          # ラッパーの本文検査はインラインコメントには掛からないので、そちらは
+          # プロンプトの指示だけが頼りである点を継続的な注意点として残しておく。
           settings: |
             {
               "permissions": {
@@ -213,7 +225,13 @@ jobs:
                   "Read(//proc/**)",
                   "Read(//sys/**)",
                   "Read(//etc/**)",
-                  "Read(~/**)"
+                  "Read(~/.claude/**)",
+                  "Read(~/.config/**)",
+                  "Read(~/.ssh/**)",
+                  "Read(~/.docker/**)",
+                  "Read(~/.aws/**)",
+                  "Read(~/.netrc)",
+                  "Read(~/.git-credentials)"
                 ]
               }
             }
