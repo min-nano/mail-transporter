@@ -153,7 +153,10 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 `.github/workflows/claude-review.yml` が、このリポジトリ内のブランチから開かれた PR に対して
 [Claude Code Action](https://github.com/anthropics/claude-code-action) を走らせ、セキュリティと
 コストを重点にレビューします。指摘は可能な限りインラインコメント、行に紐づかないものだけを
-レビュー本文にまとめ、最後に **承認 / 非承認** の判定を付けます。
+レビュー本文にまとめ、最後に **承認 / 非承認** の判定を付けます。判定はプロンプトの指示だけで
+なく投稿ラッパー側でも強制しており、本文が所定の判定行で始まらないレビューや、判定フラグと
+本文の判定行が食い違うレビューは投稿されません（指示だけでは、動作確認のつもりの `test` 投稿が
+判定付きレビューとして PR に残ってしまったため）。
 
 Claude Pro / Max のサブスクリプションをそのまま使うので、API キー（従量課金）は不要です。
 
