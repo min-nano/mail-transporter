@@ -48,23 +48,33 @@ IMAP キーワード（`$GmailInserted`）として記録します。
    ```
    INBOX のメール ─Gmail に insert─► キーワード $GmailInserted を付与 ─MOVE─► ゴミ箱
                       │ 一時的エラー(5xx/429/ネットワーク) → INBOX に残して次回再試行
-                      │ 恒久的エラー(400 等)               → Forward-Failed フォルダへ退避
+                      │ 恒久的エラー(400 等)               → キーワード $GmailFailed を付与（その場に残す）
    ```
    * キーワード付与後・ゴミ箱移動前にクラッシュしても、次回はキーワードを見て **insert をスキップ** します。
    * insert 後・キーワード付与前（IMAP 往復 1 回分の窓）にクラッシュすると、次回もう一度 insert されて
-     Gmail に **重複** が生じます。消失ではなく重複に倒す設計です。サーバがキーワード付与を拒否した場合は
-     `Forward-Unverified` へ退避し、重複が毎回増え続けないようにします。Gmail 検索による重複排除は
-     メール読み取りスコープが必要になるうえ、偽装した Message-ID で配送を抑止できる経路になるため行いません。
+     Gmail に **重複** が生じます。消失ではなく重複に倒す設計です。そのメール 1 通についてキーワード付与が
+     確認できなかった場合は `$GmailUnverified` を付与して隔離し、重複が毎回増え続けないようにします。
+     Gmail 検索による重複排除はメール読み取りスコープが必要になるうえ、偽装した Message-ID で配送を
+     抑止できる経路になるため行いません。
    * 接続時に `PERMANENTFLAGS` に `\*` が含まれるか確認し、カスタムキーワードを保存できないサーバでは
      転送を行いません（フェイルクローズ）。キーワード付与はサーバの応答（無ければ再取得）で確認します。
+     この確認は「サーバがカスタムキーワード全般を受け付けると広告しているか」を見るもので、広告どおりでも
+     個別の STORE が定着しないこと（メールボックス単位のキーワード数上限、STORE 直前に UID が消えた、
+     一時的な通信障害）はあり得ます。上の `$GmailUnverified` はその 1 通だけの救済措置です。
    * 多重実行は Cloud Run の `max-instances=1, concurrency=1` とプロセス内ロックで直列化しています。
      デプロイ直後にリビジョンが一瞬重なった場合も、起こり得るのは重複であって消失ではありません。
 3. **消失させない。** Gmail に恒久的に拒否されたメール（サイズ超過など）は削除せず、
-   iCloud 上の `Forward-Failed` フォルダへ退避します。ゴミ箱に入るのは Gmail への投入が確認できたメールだけです。
+   **その場に残したままキーワード `$GmailFailed` を付けて**キューから外します（隔離）。
+   INBOX の一覧取得は `NOT KEYWORD $GmailFailed` で除外するので、毎回 Gmail へ再送信されることはありません。
+   iCloud 側のフォルダ構成には一切手を触れません（フォルダを作らない・メールを動かさない）。
+   ゴミ箱に入るのは Gmail への投入が確認できたメールだけです。
    一時的エラーは回数制限なく再試行します（メールは INBOX に残るだけなので安全です）。
    1 回の実行で `REJECTION_THRESHOLD`（既定 3）件以上が拒否され、かつ 1 通も投入できなかった場合は
-   「メールではなくアカウントや設定の問題」とみなし、退避せずにエラーを返します（INBOX が丸ごと空になる事故を防ぎます）。
-   ただしサイズ超過（HTTP 413）はそのメール固有の拒否なので、この判定に数えず常に退避します。
+   「メールではなくアカウントや設定の問題」とみなし、隔離せずにエラーを返します（INBOX が丸ごと隔離される事故を防ぎます）。
+   ただしサイズ超過（HTTP 413）はそのメール固有の拒否なので、この判定に数えず常に隔離します。
+   キーワードの付与自体がサーバに拒否された場合だけ、最後の手段として `Forward-Failed` /
+   `Forward-Unverified` フォルダへ退避します（何の印も付かないと毎回 Gmail へ再送信されるため）。
+   通常運用ではこれらのフォルダは作成されません。`QUARANTINE_MODE=folder` で従来のフォルダ退避に戻せます。
 4. **watcher は自動修復する。** watcher は監視ループの各ブロッキング操作（IDLE、forwarder 呼び出し、スリープ）の
    直前に「この操作は最大 N 秒かかる」とハートビートを更新し、`/healthz` はその猶予内なら 200 を返します。
    サイズ 1 のマネージドインスタンスグループ（MIG）がこれを監視し、VM の停止・削除・プロセスのハングを検出すると
@@ -118,7 +128,9 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 ./deploy/05_deploy_watcher.sh            # GCE e2-micro の MIG (Container-Optimized OS) + 自動修復
 ```
 
-コード更新後は `./deploy/release.sh` でビルドと両方のロールアウトをまとめて行えます。
+コード更新後は `./deploy/release.sh` でビルドと両方のロールアウトをまとめて行えます。forwarder と watcher は
+同じイメージを共有し、隔離キーワードの扱いで足並みを揃える必要があるため、片方だけを更新せず常に両方を
+ロールアウトしてください（詳細は[運用メモ](#運用メモ)）。
 `deploy/env.sh` を置かずに `PROJECT_ID` と `ICLOUD_USER` を環境変数で渡しても動きます（残りは `deploy/_common.sh` の既定値）。
 
 ### 3b. main への push で自動デプロイする（任意）
@@ -268,10 +280,13 @@ python -m mailtransporter.cli sync
 | `ICLOUD_PASSWORD` / `ICLOUD_PASSWORD_SECRET` | – | アプリ用パスワード。後者は Secret Manager のリソース名（watcher が使用） |
 | `GMAIL_OAUTH_JSON` / `GMAIL_OAUTH_JSON_SECRET` | – | `{"client_id","client_secret","refresh_token"}` |
 | `GMAIL_LABEL` | `iCloud` | 付与するラベル。空文字で無効（デプロイスクリプトでは `none` を指定） |
-| `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上）。**Gmail には入っていない** |
-| `UNVERIFIED_FOLDER` | `Forward-Unverified` | Gmail への投入は成功したがキーワードを記録できなかったメールの退避先。**Gmail には入っている**ので INBOX に戻すと重複する |
-| `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます |
-| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効）。サイズ超過（413）は件数に含めず常に退避する。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正など）は早めに解消すること |
+| `QUARANTINE_MODE` | `keyword` | 転送できないメールの隔離方法。`keyword` はその場に残してキーワードを付与（iCloud のフォルダ構成を変えない）、`folder` は専用フォルダへ移動（旧挙動） |
+| `FAILED_KEYWORD` | `$GmailFailed` | Gmail に恒久拒否されたメールに付けるキーワード。**Gmail には入っていない**。`retry` で解除すると再送される |
+| `UNVERIFIED_KEYWORD` | `$GmailUnverified` | Gmail への投入は成功したがキーワードを記録できなかったメールに付けるキーワード。**Gmail には入っている**ので解除すると重複する |
+| `FAILED_FOLDER` | `Forward-Failed` | `QUARANTINE_MODE=folder` の退避先。keyword モードでは、キーワード付与をサーバに拒否された時のフォールバックとしてのみ使われます |
+| `UNVERIFIED_FOLDER` | `Forward-Unverified` | 同上（Gmail には入っているメール用） |
+| `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます。3 つのキーワードは互いに異なる必要があります |
+| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ隔離せずエラーにする（0 で無効）。サイズ超過（413）は件数に含めず常に隔離する。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正など）は早めに解消すること |
 | `ALLOWED_INVOKER_SA` | – | (forwarder) `/sync` を呼べるサービスアカウント。Cloud Run の IAM に加えてアプリ側でも ID トークンを検証する。未設定なら検証しない（ローカル用） |
 | `EXPECTED_AUDIENCE` | – | (forwarder) ID トークンの `aud` に要求する値（Cloud Run のサービス URL）。デプロイスクリプトが自動設定。`ALLOWED_INVOKER_SA` があるのにこれが空なら `/sync` は全て拒否される（フェイルクローズ） |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
@@ -282,21 +297,55 @@ python -m mailtransporter.cli sync
 | `HEALTH_PORT` | `8080` | (watcher) `/healthz` を待ち受けるポート。MIG のヘルスチェックが叩く |
 | `HEALTH_STARTUP_GRACE` | `300` | (watcher) 起動直後に healthy とみなす猶予（秒） |
 
+## 隔離されたメールの確認と再試行
+
+隔離されたメールは移動も削除もされず、INBOX にそのまま残ります。ただし **カスタム IMAP キーワードは
+Apple Mail や icloud.com の画面には表示されません**。どのメールが隔離されたかは CLI で確認します
+（`ICLOUD_USER` と `ICLOUD_PASSWORD` だけで動き、Gmail の認証情報は不要です）。
+
+```bash
+export ICLOUD_USER=... ICLOUD_PASSWORD=...
+
+# 隔離されているメールの一覧（--json で機械可読）
+python -m mailtransporter.cli list-quarantined
+
+# キーワードを解除してキューに戻す（次回の実行で再送されます）
+python -m mailtransporter.cli retry --uid 1234
+python -m mailtransporter.cli retry --all
+
+# 逆に、特定のメールを手動でキューから外す
+python -m mailtransporter.cli mark-failed --uid 1234
+```
+
+`retry` が既定で対象にするのは `$GmailFailed`（Gmail に入っていないもの）だけです。
+`$GmailUnverified` は Gmail に届いているため、解除すると重複します。必要な場合のみ
+`--unverified --yes` を明示してください。
+
 ## 運用メモ
 
-* **`Forward-Failed` フォルダ** は定期的に確認してください。ここに入るのは Gmail が受け付けなかったメール
-  （50 MB 超など）で、Gmail には入っていません。原因を解消して INBOX に戻せば再処理されます。
-* **`Forward-Unverified` フォルダ** には、Gmail への投入は成功したのに iCloud 側へキーワードを記録できなかった
-  メールが入ります。こちらは Gmail に届いているので、INBOX に戻すと重複します。Gmail 側を確認したうえで
-  ゴミ箱へ移すか、そのまま残してください。
+* **隔離されたメール** は `list-quarantined` で定期的に確認してください。`$GmailFailed` が付くのは
+  Gmail が受け付けなかったメール（50 MB 超など）で、Gmail には入っていません。原因を解消して
+  `retry` すれば再処理されます。
+* **`$GmailUnverified` が付いたメール** は、Gmail への投入は成功したのに iCloud 側へキーワードを
+  記録できなかったものです。Gmail には届いているので、そのまま残すか、Gmail 側を確認したうえで
+  手動でゴミ箱へ移してください。
+* **`Forward-Failed` / `Forward-Unverified` フォルダ** が作られていた場合は、サーバがキーワード付与を
+  拒否したというサインです（`falling back to folder` がログに出ます）。中身は上記と同じ意味で、
+  INBOX に戻せば再処理されます。
 * **INBOX に残り続けるメール**: 一時的エラーは無期限に再試行するため、特定のメールだけが Gmail に
   5xx を返され続けると INBOX に残り続けます。ログの `transient Gmail failure` で確認できます。
-  手動で `Forward-Failed` などへ移せばキューから外れます。
+  `mark-failed --uid <UID>` でキューから外せます。
+* **forwarder と watcher は一緒に更新する**: watcher も同じキーワードを除外して「INBOX が空か」を
+  判断します。キーワード隔離では隔離済みメールが INBOX に残るため、forwarder だけを新しくすると、
+  除外を知らない古い watcher が隔離済みメールを新着とみなし、`RETRIGGER_INTERVAL`（既定 600 秒）ごとに
+  forwarder を呼び続けます（無害ですが無駄な呼び出しです）。コード更新は両方をまとめてロールアウトする
+  `./deploy/release.sh` を使ってください。`FAILED_KEYWORD` / `UNVERIFIED_KEYWORD` を変更する場合も
+  同様に、両方へ同じ値を設定してください。
 * **実行が `rejected by Gmail and none were accepted` で失敗し続ける**: `REJECTION_THRESHOLD` の判定が
   掛かっています。多くはラベル ID やリクエスト形式の問題なのでログの `First error` を確認してください。
   INBOX に 413 以外の理由で恒久拒否されるメールだけが閾値以上残っている場合も同じ状態になります。
-  その場合は該当メールを手動で `Forward-Failed` へ移すか、一時的に `REJECTION_THRESHOLD=0` にして退避させ、
-  元に戻してください。新しいメールが 1 通でも投入できれば判定は解除されます。
+  その場合は該当メールを `mark-failed --uid <UID>` でキューから外すか、一時的に `REJECTION_THRESHOLD=0` に
+  して隔離させ、元に戻してください。新しいメールが 1 通でも投入できれば判定は解除されます。
 * **ログと `/sync` 応答の資格情報**: 読み込んだシークレットの値はログ（トレースバック含む）と
   `/sync` のエラー文字列から自動的にマスクされます（`***`）。
 * **カスタムキーワード非対応の場合**: ログに `does not advertise support for custom keywords` と出て

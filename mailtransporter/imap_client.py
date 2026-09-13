@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
+from email.header import decode_header, make_header
+from email.parser import BytesHeaderParser
 
 import imapclient
 from imapclient import IMAPClient
@@ -56,6 +59,7 @@ class ICloudMailbox:
         *,
         timeout: int = 60,
         readonly: bool = False,
+        skip_keywords: Sequence[str] = (),
     ) -> None:
         self.host = host
         self.port = port
@@ -63,6 +67,9 @@ class ICloudMailbox:
         self._password = password
         self.timeout = timeout
         self.readonly = readonly
+        # Quarantined mail keeps sitting in the INBOX with one of these
+        # keywords; it must never be listed as work again.
+        self.skip_keywords = tuple(skip_keywords)
         self._client: IMAPClient | None = None
         self._trash_folder: str | None = None
         self.uidvalidity: int = 0
@@ -126,12 +133,72 @@ class ICloudMailbox:
         return self._client
 
     # -- queries -------------------------------------------------------
-    def list_inbox_uids(self) -> list[int]:
-        """Return UIDs of every message in INBOX that is not flagged \\Deleted."""
+    def list_inbox_uids(self, *, skip_keywords: Sequence[str] | None = None) -> list[int]:
+        """Return UIDs of INBOX messages that are neither \\Deleted nor quarantined.
+
+        Quarantined mail stays in the INBOX carrying a keyword instead of being
+        moved out of the way, so it has to be filtered out here — for the
+        forwarder (which would re-send it to Gmail on every run) and for the
+        watcher (which would never see an empty INBOX again) alike.
+        """
+        keywords = list(self.skip_keywords if skip_keywords is None else skip_keywords)
+        criteria: list[str] = ["NOT", "DELETED"]
+        for keyword in keywords:
+            criteria += ["NOT", "KEYWORD", keyword]
         try:
-            return sorted(int(u) for u in self.client.search(["NOT", "DELETED"]))
+            return sorted(int(u) for u in self.client.search(criteria))
+        except Exception as exc:  # noqa: BLE001
+            if not keywords:
+                raise MailboxError(f"IMAP search failed: {exc}") from exc
+            # A server may store keywords happily and still refuse to search on
+            # them. Falling back to a plain listing plus a client-side filter
+            # keeps quarantined mail out of the queue either way.
+            log.warning("IMAP SEARCH with keyword exclusion failed (%s); filtering client-side", exc)
+            return [uid for uid, flags in self.inbox_flags().items() if not _matches(flags, keywords)]
+
+    def inbox_flags(self) -> dict[int, frozenset[str]]:
+        """FLAGS of every non-\\Deleted INBOX message, keyed by UID (sorted)."""
+        try:
+            uids = sorted(int(u) for u in self.client.search(["NOT", "DELETED"]))
+            fetched = self.client.fetch(uids, [b"FLAGS"]) if uids else {}
         except Exception as exc:  # noqa: BLE001
             raise MailboxError(f"IMAP search failed: {exc}") from exc
+        return {
+            uid: frozenset(_decode(f) for f in (fetched.get(uid) or {}).get(b"FLAGS", ()))
+            for uid in uids
+        }
+
+    def search_keyword(self, keyword: str) -> list[int]:
+        """UIDs of INBOX messages carrying ``keyword``.
+
+        The SEARCH result is re-checked against the fetched FLAGS: a server
+        that ignores an unknown KEYWORD criterion would otherwise report the
+        whole INBOX as quarantined.
+        """
+        return [uid for uid, flags in self.inbox_flags().items() if _matches(flags, [keyword])]
+
+    def fetch_headers(self, uids: Sequence[int]) -> dict[int, dict[str, str]]:
+        """Return the Date / From / Subject of each UID, MIME-decoded."""
+        if not uids:
+            return {}
+        try:
+            fetched = self.client.fetch(list(uids), [b"BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)]"])
+        except Exception as exc:  # noqa: BLE001
+            raise MailboxError(f"IMAP header fetch failed: {exc}") from exc
+        headers: dict[int, dict[str, str]] = {}
+        for uid in uids:
+            item = fetched.get(uid) or {}
+            # Servers echo the section back with their own spelling, so match on
+            # the prefix rather than on an exact key.
+            raw = next(
+                (v for k, v in item.items() if isinstance(k, bytes) and k.startswith(b"BODY[HEADER")),
+                None,
+            )
+            parsed = BytesHeaderParser().parsebytes(bytes(raw)) if raw else {}
+            headers[uid] = {
+                name.lower(): _decode_header(parsed.get(name)) for name in ("Date", "From", "Subject")
+            }
+        return headers
 
     def fetch_message(self, uid: int) -> FetchedMessage:
         """Fetch the raw RFC 822 bytes and flags for ``uid`` without marking it read."""
@@ -164,6 +231,24 @@ class ICloudMailbox:
             raise MailboxError(f"IMAP STORE +FLAGS {keyword} failed for uid={uid}: {exc}") from exc
         if keyword.lower() not in flags:
             raise MailboxError(f"IMAP server did not confirm keyword {keyword} on uid={uid}")
+
+    def remove_keyword(self, uid: int, keyword: str) -> None:
+        """Clear ``keyword`` from ``uid``, confirming the server applied it.
+
+        Used to put quarantined mail back into the queue; fails closed so a
+        message is never reported as re-queued while the keyword still hides
+        it from :meth:`list_inbox_uids`.
+        """
+        try:
+            response = self.client.remove_flags([uid], [keyword.encode("ascii")])
+            flags = {_decode(f).lower() for f in (response.get(uid) or ())} if uid in response else None
+            if flags is None or keyword.lower() in flags:
+                fetched = self.client.fetch([uid], [b"FLAGS"])
+                flags = {_decode(f).lower() for f in (fetched.get(uid) or {}).get(b"FLAGS", ())}
+        except Exception as exc:  # noqa: BLE001
+            raise MailboxError(f"IMAP STORE -FLAGS {keyword} failed for uid={uid}: {exc}") from exc
+        if keyword.lower() in flags:
+            raise MailboxError(f"IMAP server did not clear keyword {keyword} on uid={uid}")
 
     def trash_folder(self) -> str:
         if self._trash_folder:
@@ -239,3 +324,19 @@ def _decode(value: bytes | str) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _matches(flags: frozenset[str], keywords: Sequence[str]) -> bool:
+    """True when ``flags`` carries any of ``keywords`` (IMAP atoms, case-insensitive)."""
+    lowered = {f.lower() for f in flags}
+    return any(keyword.lower() in lowered for keyword in keywords)
+
+
+def _decode_header(value: str | None) -> str:
+    """Render a possibly MIME-encoded header as plain text (never raises)."""
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:  # noqa: BLE001 - a malformed header must not break a listing
+        return value
