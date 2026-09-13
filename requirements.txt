@@ -440,9 +440,9 @@ grpcio-status==1.83.1 \
     --hash=sha256:2cd328ee62ef2b3eb957dd3b75db7dadcdbb76488fdc9ab3aba1ebfbbdc324a4 \
     --hash=sha256:c08c8d553d6ab96effae1d923839de22926f5a316a942f48a48040e047c517af
     # via google-api-core
-gunicorn==23.0.0 \
-    --hash=sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d \
-    --hash=sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec
+gunicorn==26.2.0 \
+    --hash=sha256:62b864895d9ebff0b2f9867ba04fe811c93121596540830c9c916d0769668447 \
+    --hash=sha256:bd249d0b3f7972f7432f0a6b6ff3b3ee2d129f70cd1ff6c09a9dd9e29a2b88e3
     # via mail-transporter (pyproject.toml)
 httplib2==0.32.0 \
     --hash=sha256:48a0ef30a42db65d8f3399045e1d09ab0ba66e3b9efc360d07f80ea55d286025 \
@@ -564,10 +564,6 @@ opentelemetry-api==1.44.0 \
     --hash=sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a \
     --hash=sha256:94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef
     # via google-api-core
-packaging==26.3 \
-    --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
-    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
-    # via gunicorn
 proto-plus==1.28.4 \
     --hash=sha256:4b01341272f8a348db3f003b6143109f83ab43091019d5181b3fcdf500ab32aa \
     --hash=sha256:5ff7ecad828e032a491fcb86947801768e32237f99dd049b649965b892ae9a63
