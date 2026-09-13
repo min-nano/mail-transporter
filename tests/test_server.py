@@ -95,3 +95,24 @@ def test_sync_refused_when_audience_is_missing(monkeypatch):
 
     monkeypatch.setattr(google.oauth2.id_token, "verify_oauth2_token", fake_verify)
     assert server.app.test_client().post("/sync", headers={"Authorization": "Bearer good"}).status_code == 403
+
+
+def test_sync_error_text_is_scrubbed_of_secrets(monkeypatch):
+    from mailtransporter import secrets
+
+    monkeypatch.setattr(secrets, "_SECRET_VALUES", set())
+    secrets.register_secret("hunter2-app-password")
+
+    class Boom:
+        def run(self):
+            raise RuntimeError("LOGIN user hunter2-app-password failed")
+
+    monkeypatch.setattr(server, "get_forwarder", lambda: Boom())
+    body = server.app.test_client().post("/sync").get_json()
+    assert body["status"] == "error"
+    assert "hunter2" not in body["error"] and "***" in body["error"]
+
+    monkeypatch.setattr(
+        server, "get_forwarder", lambda: StubForwarder(SyncResult(error="IMAP connect failed: hunter2-app-password"))
+    )
+    assert server.app.test_client().post("/sync").get_json()["error"] == "IMAP connect failed: ***"

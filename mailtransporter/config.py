@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from .secrets import ConfigError, env_int, require_env, resolve_secret_env
+from .secrets import ConfigError, env_int, register_secret, require_env, resolve_secret_env
 
 DEFAULT_IMAP_HOST = "imap.mail.me.com"
 DEFAULT_IMAP_PORT = 993
@@ -63,6 +63,8 @@ class GmailSettings:
         if missing:
             raise ConfigError(f"GMAIL_OAUTH_JSON is missing keys: {', '.join(missing)}")
         label = os.environ.get("GMAIL_LABEL", "iCloud").strip() or None
+        register_secret(data["client_secret"])
+        register_secret(data["refresh_token"])
         return cls(
             client_id=data["client_id"],
             client_secret=data["client_secret"],

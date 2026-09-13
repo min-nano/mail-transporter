@@ -26,6 +26,9 @@ SCOPES = [
 ]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 RESUMABLE_THRESHOLD = 5 * 1024 * 1024  # bytes
+# 413 (payload too large) is about the one message being sent, so it never
+# counts toward the forwarder's "the whole account is broken" circuit breaker.
+PER_MESSAGE_STATUSES = frozenset({413})
 # Socket timeout for every Gmail API round trip. Without it httplib2 blocks
 # forever on a stalled connection, and with a single gunicorn worker and
 # max-instances=1 that one hang would wedge the forwarder until a redeploy.
@@ -35,7 +38,16 @@ HTTP_TIMEOUT_SECONDS = 60.0
 
 
 class GmailError(Exception):
-    """Base class for Gmail failures."""
+    """Base class for Gmail failures. ``status`` is the HTTP status when known."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def per_message(self) -> bool:
+        """True when the status can only describe this message, never the account."""
+        return self.status in PER_MESSAGE_STATUSES
 
 
 class GmailRetryableError(GmailError):
@@ -99,7 +111,8 @@ class GmailClient:
             return request.execute(num_retries=self._num_retries)
         except HttpError as exc:
             error_cls = classify_http_error(exc)
-            raise error_cls(f"Gmail API error {exc.resp.status}: {_message(exc)}") from exc
+            status = int(getattr(exc.resp, "status", 0) or 0) or None
+            raise error_cls(f"Gmail API error {exc.resp.status}: {_message(exc)}", status=status) from exc
         except RefreshError as exc:
             raise GmailAuthError(f"Gmail OAuth refresh failed: {exc}") from exc
         except (TransportError, socket.error, ssl.SSLError, TimeoutError, ConnectionError) as exc:

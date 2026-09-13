@@ -69,6 +69,15 @@ class SyncResult:
 
 
 @dataclass(frozen=True)
+class Rejection:
+    uid: int
+    error: str
+    # A status such as 413 can only describe this one message, so it is
+    # quarantined even when the circuit breaker suspects the account.
+    per_message: bool = False
+
+
+@dataclass(frozen=True)
 class ForwarderOptions:
     label: str | None = "iCloud"
     # Gmail rejected the message; it is NOT in Gmail. Moving it back to INBOX retries it.
@@ -111,7 +120,7 @@ class Forwarder:
     def run(self) -> SyncResult:
         started = self._clock()
         result = SyncResult()
-        rejected: list[tuple[int, str]] = []
+        rejected: list[Rejection] = []
         try:
             with self._mailbox_factory() as mailbox:
                 mailbox.require_keywords()
@@ -145,19 +154,23 @@ class Forwarder:
         log.info("Sync finished: %s", result.to_dict())
         return result
 
-    def _settle_rejections(self, rejected: list[tuple[int, str]], mailbox: ICloudMailbox, result: SyncResult) -> None:
+    def _settle_rejections(self, rejected: list[Rejection], mailbox: ICloudMailbox, result: SyncResult) -> None:
         threshold = self._options.rejection_threshold
-        if threshold and len(rejected) >= threshold and result.forwarded == 0:
+        suspicious = [r for r in rejected if not r.per_message]
+        if threshold and len(suspicious) >= threshold and result.forwarded == 0:
             message = (
-                f"{len(rejected)} message(s) were rejected by Gmail and none were accepted; "
-                f"suspecting an account or configuration problem, nothing was quarantined. "
-                f"First error: {rejected[0][1]}"
+                f"{len(suspicious)} message(s) were rejected by Gmail and none were accepted; "
+                f"suspecting an account or configuration problem, they were not quarantined. "
+                f"First error: {suspicious[0].error}"
             )
             log.error(message)
             result.error = result.error or message
-            return
-        for uid, error in rejected:
-            log.error("uid=%s permanently rejected by Gmail: %s", uid, error)
+            # Oversized mail is still parked: it can never succeed and would
+            # otherwise keep the breaker tripped until a smaller mail arrives.
+            rejected = [r for r in rejected if r.per_message]
+        for rejection in rejected:
+            uid = rejection.uid
+            log.error("uid=%s permanently rejected by Gmail: %s", uid, rejection.error)
             try:
                 self._quarantine(uid, mailbox, result)
             except AbortRun as exc:
@@ -173,7 +186,7 @@ class Forwarder:
         gmail: GmailClient,
         extra_labels: list[str],
         result: SyncResult,
-        rejected: list[tuple[int, str]],
+        rejected: list[Rejection],
     ) -> None:
         keyword = self._options.inserted_keyword
         try:
@@ -197,7 +210,7 @@ class Forwarder:
                 result.retry_later += 1
                 return
             except GmailPermanentError as exc:
-                rejected.append((uid, str(exc)))
+                rejected.append(Rejection(uid, str(exc), per_message=exc.per_message))
                 return
             result.forwarded += 1
             log.info("uid=%s inserted into Gmail as %s", uid, gmail_id)

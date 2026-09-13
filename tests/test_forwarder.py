@@ -238,3 +238,25 @@ def test_rejections_keep_the_original_error_when_imap_is_broken(mailbox, gmail):
     assert not result.ok and "fetching uid=2" in result.error
     assert result.quarantined == 0
     assert set(mailbox.inbox) == {1, 2}
+
+
+def test_oversized_mail_is_quarantined_even_when_the_breaker_trips(mailbox, gmail):
+    """413 is about the message, never the account: park it instead of re-sending it forever."""
+    for uid in range(1, 5):
+        mailbox.inbox[uid] = make_raw(f"<{uid}@example.com>")
+    gmail.errors.extend([GmailPermanentError("413 too large", status=413)] * 4)
+    result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
+    assert result.ok and result.quarantined == 4
+    assert mailbox.folders["Forward-Failed"] == [1, 2, 3, 4]
+
+
+def test_breaker_still_parks_oversized_mail_alongside_suspicious_rejections(mailbox, gmail):
+    for uid in range(1, 5):
+        mailbox.inbox[uid] = make_raw(f"<{uid}@example.com>")
+    gmail.errors.extend(
+        [GmailPermanentError("413 too large", status=413)] + [GmailPermanentError("400 bad label", status=400)] * 3
+    )
+    result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
+    assert not result.ok and "3 message(s)" in result.error
+    assert mailbox.folders["Forward-Failed"] == [1]
+    assert set(mailbox.inbox) == {2, 3, 4}

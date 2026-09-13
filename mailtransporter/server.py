@@ -9,8 +9,11 @@ import threading
 from flask import Flask, jsonify, request
 
 from .runtime import build_forwarder, configure_logging
+from .secrets import redact
 
 configure_logging()
+
+ERROR_TEXT_LIMIT = 500
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -95,9 +98,15 @@ def sync():
         return jsonify({"status": "busy"}), 409
     try:
         result = get_forwarder().run()
-        return jsonify(result.to_dict()), (200 if result.ok else 500)
+        payload = result.to_dict()
+        if payload.get("error"):
+            payload["error"] = redact(payload["error"])[:ERROR_TEXT_LIMIT]
+        return jsonify(payload), (200 if result.ok else 500)
     except Exception as exc:  # noqa: BLE001 - always answer with JSON
         log.exception("sync failed")
-        return jsonify({"status": "error", "error": str(exc)}), 500
+        # The caller only needs to know the run failed; library exception text
+        # can carry echoed credentials, so it is scrubbed and truncated.
+        detail = redact(f"{type(exc).__name__}: {exc}")[:ERROR_TEXT_LIMIT]
+        return jsonify({"status": "error", "error": detail}), 500
     finally:
         _run_lock.release()

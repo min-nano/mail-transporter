@@ -63,7 +63,8 @@ IMAP キーワード（`$GmailInserted`）として記録します。
    iCloud 上の `Forward-Failed` フォルダへ退避します。ゴミ箱に入るのは Gmail への投入が確認できたメールだけです。
    一時的エラーは回数制限なく再試行します（メールは INBOX に残るだけなので安全です）。
    1 回の実行で `REJECTION_THRESHOLD`（既定 3）件以上が拒否され、かつ 1 通も投入できなかった場合は
-   「メールではなくアカウントや設定の問題」とみなし、何も退避せずにエラーを返します（INBOX が丸ごと空になる事故を防ぎます）。
+   「メールではなくアカウントや設定の問題」とみなし、退避せずにエラーを返します（INBOX が丸ごと空になる事故を防ぎます）。
+   ただしサイズ超過（HTTP 413）はそのメール固有の拒否なので、この判定に数えず常に退避します。
 4. **watcher は自動修復する。** watcher は監視ループの各ブロッキング操作（IDLE、forwarder 呼び出し、スリープ）の
    直前に「この操作は最大 N 秒かかる」とハートビートを更新し、`/healthz` はその猶予内なら 200 を返します。
    サイズ 1 のマネージドインスタンスグループ（MIG）がこれを監視し、VM の停止・削除・プロセスのハングを検出すると
@@ -270,7 +271,7 @@ python -m mailtransporter.cli sync
 | `FAILED_FOLDER` | `Forward-Failed` | Gmail に恒久拒否されたメールの退避先（iCloud 上）。**Gmail には入っていない** |
 | `UNVERIFIED_FOLDER` | `Forward-Unverified` | Gmail への投入は成功したがキーワードを記録できなかったメールの退避先。**Gmail には入っている**ので INBOX に戻すと重複する |
 | `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます |
-| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効）。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正やサイズ超過の連続など）は早めに解消すること |
+| `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効）。サイズ超過（413）は件数に含めず常に退避する。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正など）は早めに解消すること |
 | `ALLOWED_INVOKER_SA` | – | (forwarder) `/sync` を呼べるサービスアカウント。Cloud Run の IAM に加えてアプリ側でも ID トークンを検証する。未設定なら検証しない（ローカル用） |
 | `EXPECTED_AUDIENCE` | – | (forwarder) ID トークンの `aud` に要求する値（Cloud Run のサービス URL）。デプロイスクリプトが自動設定。`ALLOWED_INVOKER_SA` があるのにこれが空なら `/sync` は全て拒否される（フェイルクローズ） |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
@@ -291,6 +292,13 @@ python -m mailtransporter.cli sync
 * **INBOX に残り続けるメール**: 一時的エラーは無期限に再試行するため、特定のメールだけが Gmail に
   5xx を返され続けると INBOX に残り続けます。ログの `transient Gmail failure` で確認できます。
   手動で `Forward-Failed` などへ移せばキューから外れます。
+* **実行が `rejected by Gmail and none were accepted` で失敗し続ける**: `REJECTION_THRESHOLD` の判定が
+  掛かっています。多くはラベル ID やリクエスト形式の問題なのでログの `First error` を確認してください。
+  INBOX に 413 以外の理由で恒久拒否されるメールだけが閾値以上残っている場合も同じ状態になります。
+  その場合は該当メールを手動で `Forward-Failed` へ移すか、一時的に `REJECTION_THRESHOLD=0` にして退避させ、
+  元に戻してください。新しいメールが 1 通でも投入できれば判定は解除されます。
+* **ログと `/sync` 応答の資格情報**: 読み込んだシークレットの値はログ（トレースバック含む）と
+  `/sync` のエラー文字列から自動的にマスクされます（`***`）。
 * **カスタムキーワード非対応の場合**: ログに `does not advertise support for custom keywords` と出て
   転送は行われません。iCloud（`imap.mail.me.com`）は Apple Mail 用のキーワードを扱うため対応していますが、
   別の IMAP サーバに向ける場合は確認してください。

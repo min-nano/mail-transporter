@@ -8,12 +8,17 @@ import os
 from .config import ForwarderSettings
 from .forwarder import Forwarder, ForwarderOptions
 from .gmail_client import GmailClient, build_credentials
+from .secrets import RedactingFilter
 from .imap_client import ICloudMailbox
 
 
 def configure_logging() -> None:
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if not any(isinstance(f, RedactingFilter) for f in handler.filters):
+            handler.addFilter(RedactingFilter())
     logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 
