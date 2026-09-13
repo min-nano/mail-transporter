@@ -33,6 +33,10 @@ name: Claude Review
 
 on:
   pull_request:
+    # edited は入れない。タイトルや本文を直すたびにフルレビューが走り、
+    # サブスクリプションの利用枠を消費するわりに、レビュー対象の差分は変わらない。
+    # 本文はプロンプト側で「指示ではなくデータ」として扱う建付けなので、後から
+    # 本文に指示めいた文言を足されても従わず、指摘対象として報告する。
     types: [opened, synchronize, reopened, ready_for_review]
 
 # 既定はゼロ権限。必要な権限はジョブ側でのみ付与する。
@@ -155,7 +159,15 @@ jobs:
                   *) echo "pr-$sub: refusing flag \$name" >&2; exit 64 ;;
                 esac
                 case "\$name" in
-                  --approve|--request-changes) verdict=\$name ;;
+                  --approve|--request-changes)
+                    # 両方渡されると後勝ちになり、gh に渡る判定と本文の判定行が
+                    # 揃っていても呼び出しの意図と食い違いうる。明示的に弾く。
+                    if [ -n "\$verdict" ] && [ "\$verdict" != "\$name" ]; then
+                      echo "pr-$sub: --approve and --request-changes are mutually exclusive" >&2
+                      exit 66
+                    fi
+                    verdict=\$name
+                    ;;
                 esac
                 if [ "\$arg" = "\$name" ]; then
                   case "\$name" in
