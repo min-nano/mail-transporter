@@ -22,4 +22,6 @@ COPY mailtransporter ./mailtransporter
 RUN pip install --no-deps . && useradd --create-home --uid 10001 app
 USER app
 
-CMD exec gunicorn --bind ":${PORT}" --workers 1 --threads 4 --timeout 0 --access-logfile - mailtransporter.server:app
+# gthread: one process, a few threads, so /healthz and the 409 "busy" reply stay
+# responsive while a long /sync runs (the sync worker ignores --threads).
+CMD exec gunicorn --bind ":${PORT}" --worker-class gthread --workers 1 --threads 4 --timeout 0 --access-logfile - mailtransporter.server:app

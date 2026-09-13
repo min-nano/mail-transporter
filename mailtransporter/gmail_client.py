@@ -8,6 +8,8 @@ import logging
 import socket
 import ssl
 
+import google_auth_httplib2
+import httplib2
 from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -24,6 +26,12 @@ SCOPES = [
 ]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 RESUMABLE_THRESHOLD = 5 * 1024 * 1024  # bytes
+# Socket timeout for every Gmail API round trip. Without it httplib2 blocks
+# forever on a stalled connection, and with a single gunicorn worker and
+# max-instances=1 that one hang would wedge the forwarder until a redeploy.
+# It bounds each socket operation, not the whole request, so large uploads
+# still complete as long as bytes keep flowing.
+HTTP_TIMEOUT_SECONDS = 60.0
 
 
 class GmailError(Exception):
@@ -72,10 +80,17 @@ def classify_http_error(exc: HttpError) -> type[GmailError]:
 
 
 class GmailClient:
-    def __init__(self, credentials: Credentials, *, num_retries: int = 3) -> None:
+    def __init__(
+        self,
+        credentials: Credentials,
+        *,
+        num_retries: int = 3,
+        http_timeout: float = HTTP_TIMEOUT_SECONDS,
+    ) -> None:
         self._credentials = credentials
         self._num_retries = num_retries
-        self._service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        http = google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http(timeout=http_timeout))
+        self._service = build("gmail", "v1", http=http, cache_discovery=False)
         self._label_cache: dict[str, str] = {}
 
     # -- helpers -------------------------------------------------------

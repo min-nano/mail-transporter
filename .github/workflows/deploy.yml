@@ -20,6 +20,9 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    # Cloud Build plus the Cloud Run and MIG rollouts normally finish well
+    # inside this; a hang must not hold the deploy-production queue for hours.
+    timeout-minutes: 30
     # Add required reviewers to this environment in the repository settings to
     # put a human approval in front of every rollout, manual runs included.
     environment: production

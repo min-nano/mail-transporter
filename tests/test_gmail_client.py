@@ -40,3 +40,11 @@ def test_classification():
     assert classify_http_error(http_error(403, "accessNotConfigured")) is GmailRetryableError
     assert classify_http_error(http_error(400, "invalidArgument")) is GmailPermanentError
     assert classify_http_error(http_error(413)) is GmailPermanentError
+
+
+def test_client_http_has_socket_timeout():
+    from mailtransporter.gmail_client import HTTP_TIMEOUT_SECONDS, GmailClient, build_credentials
+
+    creds = build_credentials("id", "secret", "refresh")
+    assert GmailClient(creds)._service._http.http.timeout == HTTP_TIMEOUT_SECONDS
+    assert GmailClient(creds, http_timeout=5)._service._http.http.timeout == 5
