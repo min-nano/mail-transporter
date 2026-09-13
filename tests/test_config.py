@@ -109,7 +109,7 @@ def test_watcher_settings_requires_url(monkeypatch):
 
 
 def test_quarantine_keywords_must_differ_for_the_watcher_too(monkeypatch):
-    """The watcher reads them through this function alone, so it validates here."""
+    """A watcher redeployed on its own must fail closed on a keyword clash."""
     from mailtransporter.config import quarantine_keywords_from_env
 
     monkeypatch.setenv("FAILED_KEYWORD", "$Same")
@@ -121,4 +121,10 @@ def test_quarantine_keywords_must_differ_for_the_watcher_too(monkeypatch):
     monkeypatch.setenv("ICLOUD_PASSWORD", "app-pass")
     monkeypatch.setenv("FORWARDER_URL", "https://x.a.run.app")
     with pytest.raises(ConfigError, match="must differ"):
+        WatcherSettings.from_env()
+
+    # ...including a clash with the keyword only the forwarder writes
+    monkeypatch.delenv("UNVERIFIED_KEYWORD")
+    monkeypatch.setenv("FAILED_KEYWORD", "$GmailInserted")
+    with pytest.raises(ConfigError, match="must all differ"):
         WatcherSettings.from_env()

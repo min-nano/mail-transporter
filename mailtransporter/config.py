@@ -66,9 +66,9 @@ def quarantine_keywords_from_env() -> tuple[str, str]:
 
     Both must be excluded from the INBOX listing: the forwarder would otherwise
     re-send rejected mail to Gmail on every run, and the watcher would keep
-    re-triggering it forever because the INBOX never looks empty. They are
-    validated here rather than only in :class:`ForwarderSettings` so that the
-    watcher, which reads them through this function alone, fails closed too.
+    re-triggering it forever because the INBOX never looks empty. The pair is
+    validated here, where it is read, so every caller fails closed on the same
+    misconfiguration.
     """
     failed = keyword_from_env("FAILED_KEYWORD", DEFAULT_FAILED_KEYWORD, reserved_hint=_QUARANTINE_HINT)
     unverified = keyword_from_env("UNVERIFIED_KEYWORD", DEFAULT_UNVERIFIED_KEYWORD, reserved_hint=_QUARANTINE_HINT)
@@ -202,10 +202,14 @@ class WatcherSettings:
 
     @classmethod
     def from_env(cls) -> "WatcherSettings":
+        # The watcher only needs the quarantine pair, but it validates all
+        # three: a watcher redeployed on its own is otherwise the one place a
+        # keyword clash could go unnoticed until the forwarder is restarted.
+        keywords = keywords_from_env()
         return cls(
             icloud=ICloudSettings.from_env(),
             forwarder_url=require_env("FORWARDER_URL").rstrip("/"),
-            quarantine_keywords=quarantine_keywords_from_env(),
+            quarantine_keywords=(keywords.failed, keywords.unverified),
             retrigger_interval=env_int("RETRIGGER_INTERVAL", 600),
             idle_timeout=env_int("IDLE_TIMEOUT", 240),
             poll_interval=env_int("POLL_INTERVAL", 60),
