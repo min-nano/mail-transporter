@@ -316,7 +316,14 @@ python -m mailtransporter.cli sync
   Python 3.12 で `pip-compile --no-header --generate-hashes --strip-extras -o requirements.txt pyproject.toml` を
   実行してください（CI が `pyproject.toml` との乖離を検出します）。
 * **リフレッシュトークンの失効** (`GmailAuthError`): OAuth 同意画面がテスト状態だと 7 日で失効します。
-  再取得して `./deploy/02_secrets.sh gmail gmail-oauth.json` で更新し、Cloud Run を再デプロイしてください。
+  再取得して `./deploy/02_secrets.sh gmail gmail-oauth.json` で更新し、下記のとおり Cloud Run を再デプロイしてください。
+* **シークレットのローテーション後の反映**: どちらのプロセスもシークレットは起動時に 1 回だけ読みます。
+  Cloud Run は `:latest` をインスタンス起動時に解決するので、稼働中のインスタンスはスケールインするまで
+  古い値のままです。watcher VM は `ICLOUD_PASSWORD_SECRET` をプロセス起動時に読むので、VM を作り直すまで
+  古いパスワードで接続し続けます（失効後は再接続に失敗してバックオフを繰り返します）。
+  `02_secrets.sh` を実行したら、iCloud パスワードなら `./deploy/04_deploy_forwarder.sh` と
+  `./deploy/05_deploy_watcher.sh`（または `gcloud compute instance-groups managed rolling-action replace`）、
+  Gmail トークンなら `./deploy/04_deploy_forwarder.sh` を実行して新しい値を読み込ませてください。
 
 ## 課金の目安
 

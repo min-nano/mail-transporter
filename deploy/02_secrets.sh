@@ -36,3 +36,11 @@ name="${SECRET_ICLOUD}"; [[ "$1" == gmail ]] && name="${SECRET_GMAIL}"
 gcloud secrets versions list "${name}" --sort-by '~createTime' --filter 'state!=destroyed' \
   --format 'value(name)' | tail -n +2 \
   | xargs -r -I{} gcloud secrets versions destroy {} --secret "${name}" --quiet >/dev/null
+
+# Both consumers read the secret once at start-up, so tell the operator what
+# still has to be restarted (see README, "シークレットのローテーション後の反映").
+if [[ "$1" == icloud ]]; then
+  echo "Stored. Roll out the new password with ./deploy/04_deploy_forwarder.sh and ./deploy/05_deploy_watcher.sh"
+else
+  echo "Stored. Roll out the new token with ./deploy/04_deploy_forwarder.sh"
+fi
