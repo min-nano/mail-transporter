@@ -215,6 +215,10 @@ Claude Pro / Max のサブスクリプションをそのまま使うので、API
 * 同じ PR への連続 push は `concurrency` で古い実行を打ち切り、ジョブには `timeout-minutes: 20` を
   置いているので、ハングやリトライで実行時間とサブスクリプションの利用枠を浪費しません。
   draft の PR と Dependabot の PR はレビューしません（後者はシークレットを受け取れないため）。
+  レビュー実行中に push すると `concurrency` でその実行が打ち切られます。インラインコメントは
+  その場で投稿される一方、判定は最後にまとめて出すので、打ち切りや `timeout-minutes` 超過が
+  重なると**インラインコメントだけが残り判定が付かない**ことがあります。その場合は次の push か
+  Actions の再実行でレビューをやり直してください。
   `edited`（タイトル・本文の編集）はトリガに含めていません。編集のたびにフルレビューが走る
   わりにレビュー対象の差分は変わらないためで、本文に後から指示めいた文言を足されても
   「指示ではなくデータ」として扱い指摘対象にする、という建付けで担保しています。
@@ -329,6 +333,7 @@ python -m mailtransporter.cli sync
 | Artifact Registry | 0.5 GB | イメージは直近 2 世代のみ保持。ベースと依存のレイヤーは世代間で共有される | 依存を頻繁に変える場合。`gcloud artifacts docker images list --format='value(package,version)'` でサイズ確認 |
 | GCE e2-micro | 1 台 / 月（us-west1, us-central1, us-east1） | 常時 1 台。IMAP の通信は IDLE と UID 一覧だけで本文は取得しない | リージョンを変えた場合 |
 | Secret Manager | 6 バージョン、1 万アクセス / 月 | Cloud Run のコールドスタートと watcher 起動時のみ | 実質到達しない |
+| GitHub Actions | public リポジトリは無制限 | PR ごとに review ジョブが 1 回（`timeout-minutes: 20` が上限、実測は 10 分前後）。同じ PR への連続 push は `concurrency` で打ち切る | private にした場合。Free プランの 2,000 分 / 月を `ci.yml` / `deploy.yml` と分け合うことになる |
 | Cloud Logging | 50 GiB / 月 | 1 通あたり数行 | 実質到達しない |
 
 運用開始後は Cloud Run の「送信バイト数」（`run.googleapis.com/container/network/sent_bytes_count`）と
