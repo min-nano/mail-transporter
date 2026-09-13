@@ -29,7 +29,10 @@ case "${1:-}" in
   *)
     echo "usage: $0 icloud | gmail <gmail-oauth.json>" >&2; exit 1 ;;
 esac
-# Keep only the newest version active: the free tier covers 6 active secret versions.
+# Destroy every version but the newest. The free tier counts 6 *active* versions
+# and a disabled version is still active (and still recoverable by whoever can
+# re-enable it); only destroyed versions leave the count and the old credential.
 name="${SECRET_ICLOUD}"; [[ "$1" == gmail ]] && name="${SECRET_GMAIL}"
-gcloud secrets versions list "${name}" --filter 'state=enabled' --format 'value(name)' | tail -n +2 \
-  | xargs -r -I{} gcloud secrets versions disable {} --secret "${name}" >/dev/null
+gcloud secrets versions list "${name}" --sort-by '~createTime' --filter 'state!=destroyed' \
+  --format 'value(name)' | tail -n +2 \
+  | xargs -r -I{} gcloud secrets versions destroy {} --secret "${name}" --quiet >/dev/null

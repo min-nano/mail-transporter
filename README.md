@@ -332,7 +332,7 @@ python -m mailtransporter.cli sync
 | Cloud Build | 120 ビルド分 / 日 | 1 回 1〜3 分（`cloudbuild.yaml` で前回イメージをレイヤーキャッシュに使う） | 1 日に数十回 main へ push する場合 |
 | Artifact Registry | 0.5 GB | イメージは直近 2 世代のみ保持。ベースと依存のレイヤーは世代間で共有される | 依存を頻繁に変える場合。`gcloud artifacts docker images list --format='value(package,version)'` でサイズ確認 |
 | GCE e2-micro | 1 台 / 月（us-west1, us-central1, us-east1） | 常時 1 台。IMAP の通信は IDLE と UID 一覧だけで本文は取得しない | リージョンを変えた場合 |
-| Secret Manager | 6 バージョン、1 万アクセス / 月 | Cloud Run のコールドスタートと watcher 起動時のみ | 実質到達しない |
+| Secret Manager | 6 アクティブバージョン、1 万アクセス / 月 | `02_secrets.sh` が古いバージョンを destroy するので常にシークレットあたり 1 バージョン。アクセスは Cloud Run のコールドスタートと watcher 起動時のみ | 実質到達しない |
 | GitHub Actions | public リポジトリは無制限 | PR ごとに review ジョブが 1 回（`timeout-minutes: 20` が上限、実測は 10 分前後）。同じ PR への連続 push は `concurrency` で打ち切る | private にした場合。Free プランの 2,000 分 / 月を `ci.yml` / `deploy.yml` と分け合うことになる |
 | Cloud Logging | 50 GiB / 月 | 1 通あたり数行 | 実質到達しない |
 

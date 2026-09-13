@@ -213,3 +213,28 @@ def test_custom_keyword_name(mailbox, gmail):
 def test_message_without_message_id_is_forwarded(mailbox, gmail):
     mailbox.inbox[1] = make_raw(message_id=None)
     assert make_forwarder(mailbox, gmail).run().forwarded == 1
+
+
+def test_rejections_are_quarantined_even_when_a_later_message_aborts_the_run(mailbox, gmail):
+    """A poison message must not be re-inserted every run just because an unrelated abort followed it."""
+    mailbox.inbox[1] = make_raw()
+    mailbox.inbox[2] = make_raw("<two@example.com>")
+    mailbox.inbox[3] = make_raw("<three@example.com>")
+    gmail.errors.extend([GmailPermanentError("413 too large"), GmailAuthError("401")])
+    result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
+    assert not result.ok and "401" in result.error
+    assert result.quarantined == 1 and result.remaining == 2
+    assert mailbox.folders["Forward-Failed"] == [1]
+    assert set(mailbox.inbox) == {2, 3}
+
+
+def test_rejections_keep_the_original_error_when_imap_is_broken(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    mailbox.inbox[2] = make_raw("<two@example.com>")
+    gmail.errors.append(GmailPermanentError("413 too large"))
+    mailbox.fail_fetch.add(2)
+    mailbox.fail_move.add(1)
+    result = make_forwarder(mailbox, gmail).run()
+    assert not result.ok and "fetching uid=2" in result.error
+    assert result.quarantined == 0
+    assert set(mailbox.inbox) == {1, 2}

@@ -131,7 +131,12 @@ class Forwarder:
                         result.error = str(exc)
                         result.remaining = len(uids) - index
                         break
-                if rejected and result.error is None:
+                # Settle even after an abort: a message Gmail rejected outright
+                # would otherwise sit in INBOX and be re-inserted (and rejected
+                # again) on every run until one finally completes cleanly. If
+                # the abort was an IMAP failure the move fails too and the
+                # original error is kept.
+                if rejected:
                     self._settle_rejections(rejected, mailbox, result)
         except (MailboxError, GmailError) as exc:
             log.error("Run failed before processing could start: %s", exc)
@@ -143,12 +148,13 @@ class Forwarder:
     def _settle_rejections(self, rejected: list[tuple[int, str]], mailbox: ICloudMailbox, result: SyncResult) -> None:
         threshold = self._options.rejection_threshold
         if threshold and len(rejected) >= threshold and result.forwarded == 0:
-            result.error = (
+            message = (
                 f"{len(rejected)} message(s) were rejected by Gmail and none were accepted; "
                 f"suspecting an account or configuration problem, nothing was quarantined. "
                 f"First error: {rejected[0][1]}"
             )
-            log.error(result.error)
+            log.error(message)
+            result.error = result.error or message
             return
         for uid, error in rejected:
             log.error("uid=%s permanently rejected by Gmail: %s", uid, error)
@@ -156,7 +162,7 @@ class Forwarder:
                 self._quarantine(uid, mailbox, result)
             except AbortRun as exc:
                 log.error("Aborting run: %s", exc)
-                result.error = str(exc)
+                result.error = result.error or str(exc)
                 return
 
     # ------------------------------------------------------------------
