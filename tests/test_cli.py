@@ -11,10 +11,13 @@ import json
 import pytest
 
 from mailtransporter import cli
+from mailtransporter.config import Keywords
 from mailtransporter.imap_client import MailboxError
 
+INSERTED = "$GmailInserted"
 FAILED = "$GmailFailed"
 UNVERIFIED = "$GmailUnverified"
+KEYWORDS = Keywords(INSERTED, FAILED, UNVERIFIED)
 
 
 class FakeMailbox:
@@ -36,6 +39,9 @@ class FakeMailbox:
         if not self.keyword_support:
             raise MailboxError("no keyword support")
 
+    def inbox_flags(self):
+        return {uid: frozenset(flags) for uid, flags in self.flags.items()}
+
     def search_keyword(self, keyword):
         return sorted(uid for uid, flags in self.flags.items() if keyword in flags)
 
@@ -52,7 +58,7 @@ class FakeMailbox:
 @pytest.fixture
 def mailbox(monkeypatch):
     box = FakeMailbox({1: {FAILED}, 2: set(), 3: {UNVERIFIED}})
-    monkeypatch.setattr(cli, "_mailbox", lambda *, readonly: (box, FAILED, UNVERIFIED))
+    monkeypatch.setattr(cli, "_mailbox", lambda *, readonly: (box, KEYWORDS))
     monkeypatch.setattr(cli, "configure_logging", lambda: None)
     return box
 
@@ -117,3 +123,17 @@ def test_retry_reports_a_uid_that_is_not_quarantined(mailbox, capsys):
     assert cli.main(["retry", "--uid", "3"]) == 0  # uid 3 carries the unverified keyword
     assert mailbox.flags[3] == {UNVERIFIED}
     assert "does not carry" in capsys.readouterr().err
+
+
+def test_list_reports_a_failed_message_gmail_already_has(mailbox, capsys):
+    """Marked failed by hand after the insert: the listing must not say "not in Gmail"."""
+    mailbox.flags[1] = {FAILED, INSERTED}
+    assert cli.main(["list-quarantined"]) == 0
+    assert f"uid=1 {FAILED} [in Gmail" in capsys.readouterr().out
+
+
+def test_mark_failed_refuses_a_message_gmail_already_has(mailbox, capsys):
+    mailbox.flags[2] = {INSERTED}
+    assert cli.main(["mark-failed", "--uid", "2"]) == 1
+    assert mailbox.flags[2] == {INSERTED}
+    assert "Gmail has it" in capsys.readouterr().err

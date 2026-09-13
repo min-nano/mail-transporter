@@ -154,9 +154,9 @@ class ICloudMailbox:
             # them. Falling back to a plain listing plus a client-side filter
             # keeps quarantined mail out of the queue either way.
             log.warning("IMAP SEARCH with keyword exclusion failed (%s); filtering client-side", exc)
-            return [uid for uid, flags in self._inbox_flags().items() if not _matches(flags, keywords)]
+            return [uid for uid, flags in self.inbox_flags().items() if not _matches(flags, keywords)]
 
-    def _inbox_flags(self) -> dict[int, frozenset[str]]:
+    def inbox_flags(self) -> dict[int, frozenset[str]]:
         """FLAGS of every non-\\Deleted INBOX message, keyed by UID (sorted)."""
         try:
             uids = sorted(int(u) for u in self.client.search(["NOT", "DELETED"]))
@@ -175,7 +175,7 @@ class ICloudMailbox:
         that ignores an unknown KEYWORD criterion would otherwise report the
         whole INBOX as quarantined.
         """
-        return [uid for uid, flags in self._inbox_flags().items() if _matches(flags, [keyword])]
+        return [uid for uid, flags in self.inbox_flags().items() if _matches(flags, [keyword])]
 
     def fetch_headers(self, uids: Sequence[int]) -> dict[int, dict[str, str]]:
         """Return the Date / From / Subject of each UID, MIME-decoded."""

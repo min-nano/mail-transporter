@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from .secrets import ConfigError, env_int, register_secret, require_env, resolve_secret_env
 
@@ -49,25 +50,51 @@ def keyword_from_env(name: str, default: str, *, reserved_hint: str) -> str:
     return keyword
 
 
+class Keywords(NamedTuple):
+    """The three keywords this tool writes on iCloud messages."""
+
+    inserted: str
+    failed: str
+    unverified: str
+
+
+_QUARANTINE_HINT = "existing mail carrying it would silently drop out of the forwarding queue"
+
+
 def quarantine_keywords_from_env() -> tuple[str, str]:
     """The (failed, unverified) keywords, shared by the forwarder and watcher.
 
     Both must be excluded from the INBOX listing: the forwarder would otherwise
     re-send rejected mail to Gmail on every run, and the watcher would keep
-    re-triggering it forever because the INBOX never looks empty.
+    re-triggering it forever because the INBOX never looks empty. They are
+    validated here rather than only in :class:`ForwarderSettings` so that the
+    watcher, which reads them through this function alone, fails closed too.
     """
-    return (
-        keyword_from_env(
-            "FAILED_KEYWORD",
-            DEFAULT_FAILED_KEYWORD,
-            reserved_hint="existing mail carrying it would silently drop out of the forwarding queue",
-        ),
-        keyword_from_env(
-            "UNVERIFIED_KEYWORD",
-            DEFAULT_UNVERIFIED_KEYWORD,
-            reserved_hint="existing mail carrying it would silently drop out of the forwarding queue",
-        ),
+    failed = keyword_from_env("FAILED_KEYWORD", DEFAULT_FAILED_KEYWORD, reserved_hint=_QUARANTINE_HINT)
+    unverified = keyword_from_env("UNVERIFIED_KEYWORD", DEFAULT_UNVERIFIED_KEYWORD, reserved_hint=_QUARANTINE_HINT)
+    if failed.lower() == unverified.lower():
+        raise ConfigError(
+            "FAILED_KEYWORD and UNVERIFIED_KEYWORD must differ; one means the message is NOT in "
+            f"Gmail and the other that it IS, and both are {failed!r}"
+        )
+    return failed, unverified
+
+
+def keywords_from_env() -> Keywords:
+    """All three keywords, validated to be distinct from one another."""
+    inserted = keyword_from_env(
+        "INSERTED_KEYWORD",
+        DEFAULT_INSERTED_KEYWORD,
+        reserved_hint="existing mail carrying it would be trashed without being forwarded",
     )
+    failed, unverified = quarantine_keywords_from_env()
+    names = [inserted.lower(), failed.lower(), unverified.lower()]
+    if len(set(names)) != len(names):
+        raise ConfigError(
+            "INSERTED_KEYWORD, FAILED_KEYWORD and UNVERIFIED_KEYWORD must all differ; "
+            f"got {inserted!r}, {failed!r}, {unverified!r}"
+        )
+    return Keywords(inserted, failed, unverified)
 
 
 @dataclass(frozen=True)
@@ -140,18 +167,7 @@ class ForwarderSettings:
 
     @classmethod
     def from_env(cls) -> "ForwarderSettings":
-        keyword = keyword_from_env(
-            "INSERTED_KEYWORD",
-            DEFAULT_INSERTED_KEYWORD,
-            reserved_hint="existing mail carrying it would be trashed without being forwarded",
-        )
-        failed_keyword, unverified_keyword = quarantine_keywords_from_env()
-        names = [keyword.lower(), failed_keyword.lower(), unverified_keyword.lower()]
-        if len(set(names)) != len(names):
-            raise ConfigError(
-                "INSERTED_KEYWORD, FAILED_KEYWORD and UNVERIFIED_KEYWORD must all differ; "
-                f"got {keyword!r}, {failed_keyword!r}, {unverified_keyword!r}"
-            )
+        keywords = keywords_from_env()
         mode = os.environ.get("QUARANTINE_MODE", "keyword").strip().lower() or "keyword"
         if mode not in QUARANTINE_MODES:
             raise ConfigError(f"QUARANTINE_MODE must be one of {', '.join(QUARANTINE_MODES)}; got {mode!r}")
@@ -160,9 +176,9 @@ class ForwarderSettings:
             gmail=GmailSettings.from_env(),
             failed_folder=os.environ.get("FAILED_FOLDER", "Forward-Failed"),
             unverified_folder=os.environ.get("UNVERIFIED_FOLDER", "Forward-Unverified"),
-            inserted_keyword=keyword,
-            failed_keyword=failed_keyword,
-            unverified_keyword=unverified_keyword,
+            inserted_keyword=keywords.inserted,
+            failed_keyword=keywords.failed,
+            unverified_keyword=keywords.unverified,
             quarantine_mode=mode,
             time_budget_seconds=env_int("TIME_BUDGET_SECONDS", 480),
             rejection_threshold=env_int("REJECTION_THRESHOLD", 3),

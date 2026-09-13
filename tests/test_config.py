@@ -106,3 +106,19 @@ def test_watcher_settings_requires_url(monkeypatch):
         WatcherSettings.from_env()
     monkeypatch.setenv("FORWARDER_URL", "https://x.a.run.app/")
     assert WatcherSettings.from_env().forwarder_url == "https://x.a.run.app"
+
+
+def test_quarantine_keywords_must_differ_for_the_watcher_too(monkeypatch):
+    """The watcher reads them through this function alone, so it validates here."""
+    from mailtransporter.config import quarantine_keywords_from_env
+
+    monkeypatch.setenv("FAILED_KEYWORD", "$Same")
+    monkeypatch.setenv("UNVERIFIED_KEYWORD", "$same")
+    with pytest.raises(ConfigError, match="must differ"):
+        quarantine_keywords_from_env()
+
+    monkeypatch.setenv("ICLOUD_USER", "me@icloud.com")
+    monkeypatch.setenv("ICLOUD_PASSWORD", "app-pass")
+    monkeypatch.setenv("FORWARDER_URL", "https://x.a.run.app")
+    with pytest.raises(ConfigError, match="must differ"):
+        WatcherSettings.from_env()

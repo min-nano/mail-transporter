@@ -12,20 +12,20 @@ import argparse
 import json
 import sys
 
-from .config import ICloudSettings, quarantine_keywords_from_env
+from .config import ICloudSettings, Keywords, keywords_from_env
 from .imap_client import ICloudMailbox, MailboxError
 from .runtime import build_forwarder, configure_logging
 from .secrets import ConfigError
 
 
-def _mailbox(*, readonly: bool) -> tuple[ICloudMailbox, str, str]:
-    """An iCloud session plus the (failed, unverified) keywords it skips.
+def _mailbox(*, readonly: bool) -> tuple[ICloudMailbox, Keywords]:
+    """An iCloud session plus the keywords this tool writes on messages.
 
     Deliberately independent of the Gmail settings: looking at or re-queuing
     quarantined mail must work without OAuth credentials in the environment.
     """
     icloud = ICloudSettings.from_env()
-    failed, unverified = quarantine_keywords_from_env()
+    keywords = keywords_from_env()
     mailbox = ICloudMailbox(
         icloud.host,
         icloud.port,
@@ -33,26 +33,34 @@ def _mailbox(*, readonly: bool) -> tuple[ICloudMailbox, str, str]:
         icloud.password,
         timeout=icloud.timeout,
         readonly=readonly,
-        skip_keywords=(failed, unverified),
+        skip_keywords=(keywords.failed, keywords.unverified),
     )
-    return mailbox, failed, unverified
+    return mailbox, keywords
 
 
-def _collect(mailbox: ICloudMailbox, failed: str, unverified: str) -> list[dict]:
+def _collect(mailbox: ICloudMailbox, keywords: Keywords) -> list[dict]:
     entries: list[dict] = []
-    for keyword, in_gmail in ((failed, False), (unverified, True)):
-        uids = mailbox.search_keyword(keyword)
-        headers = mailbox.fetch_headers(uids)
-        for uid in uids:
-            entries.append({"uid": uid, "keyword": keyword, "in_gmail": in_gmail, **headers.get(uid, {})})
+    for uid, flags in mailbox.inbox_flags().items():
+        lowered = {f.lower() for f in flags}
+        keyword = next((k for k in (keywords.failed, keywords.unverified) if k.lower() in lowered), None)
+        if keyword is None:
+            continue
+        # Whether Gmail has the message is decided by the inserted keyword, not
+        # by which keyword quarantined it: a message marked failed by hand may
+        # already carry it.
+        in_gmail = keyword == keywords.unverified or keywords.inserted.lower() in lowered
+        entries.append({"uid": uid, "keyword": keyword, "in_gmail": in_gmail})
+    headers = mailbox.fetch_headers([entry["uid"] for entry in entries])
+    for entry in entries:
+        entry.update(headers.get(entry["uid"], {}))
     entries.sort(key=lambda entry: entry["uid"])
     return entries
 
 
 def _cmd_list(args) -> int:
-    mailbox, failed, unverified = _mailbox(readonly=True)
+    mailbox, keywords = _mailbox(readonly=True)
     with mailbox:
-        entries = _collect(mailbox, failed, unverified)
+        entries = _collect(mailbox, keywords)
     if args.json:
         print(json.dumps(entries, indent=2, ensure_ascii=False))
         return 0
@@ -77,8 +85,8 @@ def _cmd_retry(args) -> int:
             file=sys.stderr,
         )
         return 2
-    mailbox, failed, unverified = _mailbox(readonly=False)
-    keyword = unverified if args.unverified else failed
+    mailbox, keywords = _mailbox(readonly=False)
+    keyword = keywords.unverified if args.unverified else keywords.failed
     with mailbox:
         carrying = set(mailbox.search_keyword(keyword))
         uids = sorted(carrying) if args.all else list(args.uid)
@@ -97,13 +105,25 @@ def _cmd_retry(args) -> int:
 
 
 def _cmd_mark_failed(args) -> int:
-    mailbox, failed, _ = _mailbox(readonly=False)
+    mailbox, keywords = _mailbox(readonly=False)
+    refused = False
     with mailbox:
         mailbox.require_keywords()
+        flags = mailbox.inbox_flags()
         for uid in args.uid:
-            mailbox.add_keyword(uid, failed)
-            print(f"uid={uid} marked {failed}; it will be skipped from now on")
-    return 0
+            # "Failed" means Gmail never got it. Marking an already inserted
+            # message that way would misreport it, and it only needs trashing.
+            if keywords.inserted.lower() in {f.lower() for f in flags.get(uid, ())}:
+                print(
+                    f"uid={uid} already carries {keywords.inserted} (Gmail has it); "
+                    "not marking it as failed",
+                    file=sys.stderr,
+                )
+                refused = True
+                continue
+            mailbox.add_keyword(uid, keywords.failed)
+            print(f"uid={uid} marked {keywords.failed}; it will be skipped from now on")
+    return 1 if refused else 0
 
 
 def main(argv: list[str] | None = None) -> int:
