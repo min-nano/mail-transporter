@@ -1,0 +1,26 @@
+# Cloud Build pipeline used by deploy/03_build.sh.
+#
+# The previous image is pulled first and used as a layer cache, so a push
+# that does not touch requirements.txt rebuilds only the small application
+# layer. That keeps builds to a minute or so of the 120 free build-minutes
+# per day and makes the dependency layer byte-identical across versions,
+# which Artifact Registry then stores only once.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args: ["-c", "docker pull ${_IMAGE}:latest || exit 0"]
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --cache-from=${_IMAGE}:latest
+      - --tag=${_IMAGE}:${_TAG}
+      - --tag=${_IMAGE}:latest
+      - .
+images:
+  - ${_IMAGE}:${_TAG}
+  - ${_IMAGE}:latest
+substitutions:
+  _IMAGE: ""
+  _TAG: latest
+options:
+  logging: CLOUD_LOGGING_ONLY

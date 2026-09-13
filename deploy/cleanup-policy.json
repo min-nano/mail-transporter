@@ -1,0 +1,12 @@
+[
+  {
+    "name": "keep-current-and-previous",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 2}
+  },
+  {
+    "name": "delete-old",
+    "action": {"type": "Delete"},
+    "condition": {"olderThan": "7d"}
+  }
+]

@@ -1,0 +1,61 @@
+name: Deploy
+
+# Every push to main is tested, built with Cloud Build and rolled out to
+# Cloud Run and the watcher MIG. Authentication uses Workload Identity
+# Federation (deploy/06_github_deployer.sh); no service-account key is stored.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # Cloud Build plus the Cloud Run and MIG rollouts normally finish well
+    # inside this; a hang must not hold the deploy-production queue for hours.
+    timeout-minutes: 30
+    # Add required reviewers to this environment in the repository settings to
+    # put a human approval in front of every rollout, manual runs included.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      ICLOUD_USER: ${{ vars.ICLOUD_USER }}
+      REGION: ${{ vars.GCP_REGION }}
+      ZONE: ${{ vars.GCP_ZONE }}
+      GMAIL_LABEL: ${{ vars.GMAIL_LABEL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Check repository variables
+        env:
+          WIP: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOYER: ${{ vars.GCP_DEPLOYER_SA }}
+        run: |
+          missing=0
+          for v in PROJECT_ID ICLOUD_USER WIP DEPLOYER; do
+            if [ -z "${!v}" ]; then echo "::error::repository variable for $v is not set (see deploy/06_github_deployer.sh)"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2.2.1
+
+      - name: Build and roll out
+        run: ./deploy/release.sh "${GITHUB_SHA::7}"

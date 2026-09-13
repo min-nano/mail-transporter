@@ -1,0 +1,19 @@
+# Files never uploaded to Cloud Build (explicit, instead of relying on the
+# implicit .gitignore fallback which only applies inside a git checkout).
+.git
+.gitignore
+.venv
+venv
+__pycache__/
+*.pyc
+*.egg-info
+tests
+.github
+deploy/env.sh
+client_secret*.json
+gmail-oauth*.json
+token*.json
+.env
+.envrc
+*.key
+*-key.json
