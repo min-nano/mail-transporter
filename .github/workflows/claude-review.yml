@@ -85,6 +85,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pr-tools"
           for sub in view diff comment review; do
             case "$sub" in
+              comment|review) posts=1 ;;
+              *) posts="" ;;
+            esac
+            case "$sub" in
               view) flags=" --json " ;;
               diff) flags=" " ;;
               comment) flags=" --body " ;;
@@ -95,11 +99,19 @@ jobs:
           set -euo pipefail
           # 投稿本文にこのジョブの資格情報が混じっていたら投稿しない。Read で読めた内容を
           # --body に貼り付ける経路への最後の防波堤。
+          # 投稿するラッパーかどうか。pr-view / pr-diff は何も公開しないので、
+          # 検査対象が無くても読み取りまで止める必要はない。
+          posts="$posts"
           check_secret() {
             if [ -z "\${CLAUDE_CODE_OAUTH_TOKEN:-}\${GITHUB_TOKEN:-}\${GH_TOKEN:-}" ]; then
-              # 名前が変わるなどしてここが空になると、チェックは何も検知しないまま
-              # 通過する。黙って無効化されないようジョブログに残す。
-              echo "pr-$sub: WARNING no credential in the environment to screen for" >&2
+              # 変数名が変わるなどしてここが空になると、検査は何も検知しないまま
+              # 通過してしまう。投稿系では通さない（fail-closed）。黙って落ちると
+              # 気付けないので、チェックに出る注釈としても残す。
+              if [ -n "\$posts" ]; then
+                echo "::error::pr-$sub refused to post: no credential in the environment to screen bodies against" >&2
+                exit 65
+              fi
+              return 0
             fi
             for secret in "\${CLAUDE_CODE_OAUTH_TOKEN:-}" "\${GITHUB_TOKEN:-}" "\${GH_TOKEN:-}"; do
               if [ -n "\$secret" ]; then
