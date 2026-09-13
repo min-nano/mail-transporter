@@ -128,7 +128,9 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 ./deploy/05_deploy_watcher.sh            # GCE e2-micro の MIG (Container-Optimized OS) + 自動修復
 ```
 
-コード更新後は `./deploy/release.sh` でビルドと両方のロールアウトをまとめて行えます。
+コード更新後は `./deploy/release.sh` でビルドと両方のロールアウトをまとめて行えます。forwarder と watcher は
+同じイメージを共有し、隔離キーワードの扱いで足並みを揃える必要があるため、片方だけを更新せず常に両方を
+ロールアウトしてください（詳細は[運用メモ](#運用メモ)）。
 `deploy/env.sh` を置かずに `PROJECT_ID` と `ICLOUD_USER` を環境変数で渡しても動きます（残りは `deploy/_common.sh` の既定値）。
 
 ### 3b. main への push で自動デプロイする（任意）
@@ -333,9 +335,12 @@ python -m mailtransporter.cli mark-failed --uid 1234
 * **INBOX に残り続けるメール**: 一時的エラーは無期限に再試行するため、特定のメールだけが Gmail に
   5xx を返され続けると INBOX に残り続けます。ログの `transient Gmail failure` で確認できます。
   `mark-failed --uid <UID>` でキューから外せます。
-* **forwarder と watcher でキーワード設定を揃える**: watcher も同じキーワードを除外して「INBOX が空か」を
-  判断します。`FAILED_KEYWORD` / `UNVERIFIED_KEYWORD` を変更する場合は両方に同じ値を設定してください
-  （片方だけだと、watcher が隔離済みメールを新着とみなして forwarder を呼び続けます）。
+* **forwarder と watcher は一緒に更新する**: watcher も同じキーワードを除外して「INBOX が空か」を
+  判断します。キーワード隔離では隔離済みメールが INBOX に残るため、forwarder だけを新しくすると、
+  除外を知らない古い watcher が隔離済みメールを新着とみなし、`RETRIGGER_INTERVAL`（既定 600 秒）ごとに
+  forwarder を呼び続けます（無害ですが無駄な呼び出しです）。コード更新は両方をまとめてロールアウトする
+  `./deploy/release.sh` を使ってください。`FAILED_KEYWORD` / `UNVERIFIED_KEYWORD` を変更する場合も
+  同様に、両方へ同じ値を設定してください。
 * **実行が `rejected by Gmail and none were accepted` で失敗し続ける**: `REJECTION_THRESHOLD` の判定が
   掛かっています。多くはラベル ID やリクエスト形式の問題なのでログの `First error` を確認してください。
   INBOX に 413 以外の理由で恒久拒否されるメールだけが閾値以上残っている場合も同じ状態になります。
