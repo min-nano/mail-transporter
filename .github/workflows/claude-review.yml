@@ -26,7 +26,10 @@ name: Claude Review
 #     コメントする経路が残ります。番号は github.event.pull_request.number（PR 作者が
 #     書き換えられない数値）で、Claude の引数には一切現れません。ラッパーは渡せる
 #     フラグも許可リストで絞ります（--body-file でランナー上のファイルを PR に公開する、
-#     --repo で投稿先を変える、といった経路を塞ぐため）。
+#     --repo で投稿先を変える、といった経路を塞ぐため）。投稿本文に資格情報が混じって
+#     いないかの検査もラッパーが行いますが、これが掛かるのはラッパー経由の投稿だけです。
+#     インラインコメントは Action の MCP ツールが直接投稿するのでこの検査を通りません。
+#     そちらはプロンプト側の指示（資格情報を本文に書かない）で担保しています。
 
 on:
   pull_request:
@@ -281,6 +284,10 @@ jobs:
             7. 動作確認やテストのための投稿はしないでください。投稿するのは本物の
                レビュー結果だけです（`test` のような内容のコメントやレビューを
                出すと、PR に判定として残ってしまいます）。
+            8. 投稿するテキスト（**インラインコメントを含む**）に、環境変数の中身や
+               トークン・認証情報らしき文字列を絶対に含めないでください。PR コメントは
+               公開されます。問題を指摘するときは、値そのものを引用せず「どのファイルの
+               どこにあるか」を書いてください。
           claude_args: |
             --max-turns 40
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Glob,Grep,Bash(${{ runner.temp }}/pr-tools/pr-view:*),Bash(${{ runner.temp }}/pr-tools/pr-diff:*),Bash(${{ runner.temp }}/pr-tools/pr-comment:*),Bash(${{ runner.temp }}/pr-tools/pr-review:*)"
