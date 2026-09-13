@@ -80,3 +80,18 @@ def test_concurrent_sync_is_rejected(monkeypatch):
     gate.set()
     t.join()
     assert results["first"] == 200
+
+
+def test_sync_refused_when_audience_is_missing(monkeypatch):
+    """Invoker configured but no audience: fail closed, never fall back to an unchecked aud."""
+    monkeypatch.setattr(server, "get_forwarder", lambda: StubForwarder(SyncResult(forwarded=1)))
+    monkeypatch.setattr(server, "ALLOWED_INVOKER_SA", "watcher@p.iam.gserviceaccount.com")
+    monkeypatch.setattr(server, "EXPECTED_AUDIENCE", "")
+
+    import google.oauth2.id_token
+
+    def fake_verify(token, request, audience=None):
+        raise AssertionError("token must not be verified without an audience")
+
+    monkeypatch.setattr(google.oauth2.id_token, "verify_oauth2_token", fake_verify)
+    assert server.app.test_client().post("/sync", headers={"Authorization": "Bearer good"}).status_code == 403

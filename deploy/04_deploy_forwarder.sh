@@ -4,7 +4,9 @@ source "$(dirname "$0")/_common.sh"
 TAG="${1:-latest}"
 LABEL="${GMAIL_LABEL}"; [[ "${LABEL}" == "none" ]] && LABEL=""
 # The service URL is only known once the service exists; on the very first
-# deploy it is filled in with a second revision below.
+# deploy it is filled in with a second revision below. Until then the app
+# refuses every /sync (it fails closed without EXPECTED_AUDIENCE), and the
+# watcher cannot reach it anyway: its run.invoker binding is added last.
 EXISTING_URL="$(service_url 2>/dev/null || true)"
 
 gcloud run deploy "${SERVICE_NAME}" \

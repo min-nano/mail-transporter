@@ -28,8 +28,8 @@ _transport = None
 _transport_lock = threading.Lock()
 if ALLOWED_INVOKER_SA and not EXPECTED_AUDIENCE:
     log.warning(
-        "ALLOWED_INVOKER_SA is set but EXPECTED_AUDIENCE is empty: the caller's "
-        "identity is verified but the token audience is not"
+        "ALLOWED_INVOKER_SA is set but EXPECTED_AUDIENCE is empty: every /sync call "
+        "is refused until the audience is configured"
     )
 
 
@@ -47,18 +47,24 @@ def _google_transport():
 def verify_invoker(authorization_header: str | None, allowed_sa: str, audience: str | None = None) -> bool:
     """Return True when the bearer token is a Google-signed ID token for ``allowed_sa``.
 
-    ``audience`` (the Cloud Run service URL) is checked when given, so a
-    token issued for another service cannot be replayed here.
+    ``audience`` (the Cloud Run service URL) must be given as well: a token
+    issued for another service could otherwise be replayed here. With an
+    invoker configured but no audience, every call is refused (fail closed),
+    which is the state of the very first Cloud Run revision until the deploy
+    script fills the URL in.
     """
     if not allowed_sa:
         return True
+    if not audience:
+        log.warning("Rejected /sync call: EXPECTED_AUDIENCE is not configured")
+        return False
     if not authorization_header or not authorization_header.startswith("Bearer "):
         return False
     import google.oauth2.id_token
 
     try:
         claims = google.oauth2.id_token.verify_oauth2_token(
-            authorization_header[len("Bearer "):], _google_transport(), audience=audience or None
+            authorization_header[len("Bearer "):], _google_transport(), audience=audience
         )
     except Exception as exc:  # noqa: BLE001 - any verification failure is a denial
         log.warning("Rejected /sync call: %s", exc)

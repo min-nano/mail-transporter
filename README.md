@@ -272,7 +272,7 @@ python -m mailtransporter.cli sync
 | `INSERTED_KEYWORD` | `$GmailInserted` | Gmail 投入済みを示す IMAP キーワード（ASCII のアトム）。このツール専用の未使用の名前にすること。`$Forwarded` や `$Junk` など Apple Mail が使うものは拒否されます |
 | `REJECTION_THRESHOLD` | `3` | 1 回の実行でこの件数以上が拒否され、かつ 1 通も投入できなければ退避せずエラーにする（0 で無効）。この状態が続く間は毎回同じメールを Gmail に再送信するため、原因（ラベル ID 不正やサイズ超過の連続など）は早めに解消すること |
 | `ALLOWED_INVOKER_SA` | – | (forwarder) `/sync` を呼べるサービスアカウント。Cloud Run の IAM に加えてアプリ側でも ID トークンを検証する。未設定なら検証しない（ローカル用） |
-| `EXPECTED_AUDIENCE` | – | (forwarder) ID トークンの `aud` に要求する値（Cloud Run のサービス URL）。デプロイスクリプトが自動設定 |
+| `EXPECTED_AUDIENCE` | – | (forwarder) ID トークンの `aud` に要求する値（Cloud Run のサービス URL）。デプロイスクリプトが自動設定。`ALLOWED_INVOKER_SA` があるのにこれが空なら `/sync` は全て拒否される（フェイルクローズ） |
 | `TIME_BUDGET_SECONDS` | `480` | 1 回の `/sync` で処理に使う時間。超えた分は次回へ（`remaining` で報告） |
 | `FORWARDER_URL` | – | (watcher) Cloud Run の URL |
 | `RETRIGGER_INTERVAL` | `600` | (watcher) INBOX にメールが残っている場合の再トリガー間隔（秒） |
