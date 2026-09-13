@@ -388,7 +388,10 @@ jobs:
                トークン・認証情報らしき文字列を絶対に含めないでください。PR コメントは
                公開されます。問題を指摘するときは、値そのものを引用せず「どのファイルの
                どこにあるか」を書いてください。
+          # 上限を超えると Action はレビュー投稿後でもジョブを失敗にする。この規模の PR
+          # （40 ファイル強）で実測 51〜59 ターンだったので、その 1.5 倍弱を上限にする。
+          # 暴走時の歯止めは上の timeout-minutes が担う。
           claude_args: |
-            --max-turns 40
+            --max-turns 80
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Glob,Grep,Bash(${{ runner.temp }}/pr-tools/pr-view:*),Bash(${{ runner.temp }}/pr-tools/pr-diff:*),Bash(${{ runner.temp }}/pr-tools/pr-comment:*),Bash(${{ runner.temp }}/pr-tools/pr-review:*)"
             --disallowedTools "Write,Edit,NotebookEdit,WebFetch,WebSearch,Task,Bash(gh:*)"
