@@ -17,9 +17,12 @@ name: Claude Review
 #     指示ではなくデータとして扱うよう明示しています。
 #     ただし allowedTools はサンドボックスではなくベストエフォートの制限です。許可判定を
 #     すり抜けるコマンドが組み立てられる可能性を完全には排除できないため、すり抜けられても
-#     被害が限定されるよう次の三点で封じ込めています: WebFetch/WebSearch を明示的に禁止し
-#     curl/wget も許可しない（外部送信の経路がない）、ジョブの権限はこのリポジトリの PR への
+#     被害が限定されるよう次の三点で封じ込めています: WebFetch/WebSearch と curl/wget を
+#     明示的に禁止する（外部送信の経路がない）、ジョブの権限はこのリポジトリの PR への
 #     コメントだけ、チェックアウトに git 資格情報を残さない。
+#     なお Bash の許可判定は `&&` / `;` / `|` で連結されたコマンドを分割して各部分を
+#     個別に評価し、すべてが許可ルールに一致しない限り通さない（拒否ルールが優先）。
+#     `pr-diff && curl ...` のような連結で許可プレフィックスに便乗することはできない。
 #   * Claude に gh そのものは渡さず、この PR 番号を焼き込んだラッパー経由でのみ投稿させます。
 #     GITHUB_TOKEN の pull-requests:write はリポジトリ内の全 PR に効くため、対象 PR を固定
 #     しないと、万一プロンプトインジェクションが通ったときにレビュー対象外の PR を承認・
@@ -394,4 +397,4 @@ jobs:
           claude_args: |
             --max-turns 80
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Glob,Grep,Bash(${{ runner.temp }}/pr-tools/pr-view:*),Bash(${{ runner.temp }}/pr-tools/pr-diff:*),Bash(${{ runner.temp }}/pr-tools/pr-comment:*),Bash(${{ runner.temp }}/pr-tools/pr-review:*)"
-            --disallowedTools "Write,Edit,NotebookEdit,WebFetch,WebSearch,Task,Bash(gh:*)"
+            --disallowedTools "Write,Edit,NotebookEdit,WebFetch,WebSearch,Task,Bash(gh:*),Bash(curl:*),Bash(wget:*)"
