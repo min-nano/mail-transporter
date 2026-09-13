@@ -3,7 +3,7 @@
 # Federation trusts OIDC tokens from this repository's workflows and lets them
 # act as a dedicated deployer service account. Run once as a project owner.
 #
-#   GITHUB_REPO=owner/repo ./deploy/07_github_deployer.sh
+#   GITHUB_REPO=owner/repo ./deploy/06_github_deployer.sh
 #
 # Afterwards set these GitHub *repository variables* (Settings > Secrets and
 # variables > Actions > Variables); the script prints the values:

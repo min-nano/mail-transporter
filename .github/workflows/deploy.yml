@@ -2,7 +2,7 @@ name: Deploy
 
 # Every push to main is tested, built with Cloud Build and rolled out to
 # Cloud Run and the watcher MIG. Authentication uses Workload Identity
-# Federation (deploy/07_github_deployer.sh); no service-account key is stored.
+# Federation (deploy/06_github_deployer.sh); no service-account key is stored.
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
         run: |
           missing=0
           for v in PROJECT_ID ICLOUD_USER WIP DEPLOYER; do
-            if [ -z "${!v}" ]; then echo "::error::repository variable for $v is not set (see deploy/07_github_deployer.sh)"; missing=1; fi
+            if [ -z "${!v}" ]; then echo "::error::repository variable for $v is not set (see deploy/06_github_deployer.sh)"; missing=1; fi
           done
           exit $missing
 

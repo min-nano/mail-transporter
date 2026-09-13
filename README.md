@@ -129,7 +129,7 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 1. GCP 側で連携用のプールとデプロイ専用サービスアカウントを一度だけ作ります（プロジェクトオーナーで実行）。
 
    ```bash
-   GITHUB_REPO=owner/mail-transporter ./deploy/07_github_deployer.sh
+   GITHUB_REPO=owner/mail-transporter ./deploy/06_github_deployer.sh
    ```
 
    デプロイ用サービスアカウントに与えるのはロールアウトに必要な権限だけです（Cloud Build の投入、Cloud Run の管理、

@@ -7,7 +7,7 @@ export REGION="us-central1"          # Cloud Run / Artifact Registry
 export ZONE="us-central1-a"          # e2-micro free tier: us-west1, us-central1, us-east1 only
 export GMAIL_LABEL="iCloud"          # Gmail label added to forwarded mail ("none" to disable)
 
-# GitHub repository for the automated deploy (deploy/07_github_deployer.sh)
+# GitHub repository for the automated deploy (deploy/06_github_deployer.sh)
 export GITHUB_REPO="your-org/mail-transporter"
 
 # Names (rarely need changing; see deploy/_common.sh for the defaults)
