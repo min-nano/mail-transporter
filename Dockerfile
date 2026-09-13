@@ -24,4 +24,7 @@ USER app
 
 # gthread: one process, a few threads, so /healthz and the 409 "busy" reply stay
 # responsive while a long /sync runs (the sync worker ignores --threads).
-CMD exec gunicorn --bind ":${PORT}" --worker-class gthread --workers 1 --threads 4 --timeout 0 --access-logfile - mailtransporter.server:app
+# With gthread the worker keeps signalling the arbiter from its main loop while
+# requests run on threads, so --timeout is a watchdog for a wedged worker, not a
+# cap on request length (Cloud Run's request timeout bounds that).
+CMD exec gunicorn --bind ":${PORT}" --worker-class gthread --workers 1 --threads 4 --timeout 60 --access-logfile - mailtransporter.server:app
