@@ -172,30 +172,47 @@ jobs:
               *) check_secret "\$arg" ;;
             esac
           done
-          # レビューには必ず判定を付ける、という要件をプロンプト頼みにしない。
-          # プロンプトに書くだけでは、動作確認のつもりの test 投稿がそのまま
-          # 判定付きレビューとして PR に残ってしまう（実際に起きた）。本文が
-          # 所定の判定行で始まっていなければ投稿させない。
-          if [ "$sub" = "review" ]; then
-            if [ -z "\$verdict" ] || [ -z "\$have_body" ]; then
-              echo "pr-review: needs --approve or --request-changes together with --body" >&2
+          # 判定を必ず付ける、という要件をプロンプト頼みにしない。プロンプトに
+          # 書くだけでは、動作確認のつもりの test 投稿がそのまま判定付きレビューや
+          # コメントとして PR に残ってしまう（実際に起きた）。投稿する本文が所定の
+          # 判定行で始まっていなければ通さない。pr-comment は pr-review が失敗した
+          # ときのフォールバックで、同じ本文を投げる用途なので同じ条件を課す。
+          if [ -n "\$posts" ]; then
+            if [ -z "\$have_body" ]; then
+              echo "pr-$sub: needs --body" >&2
               exit 66
             fi
-            case "\$verdict" in
-              --approve) want="**判定: 承認 (APPROVE)**" ;;
-              *) want="**判定: 非承認 (REQUEST CHANGES)**" ;;
-            esac
             trimmed=\$body
             while [ "\${trimmed#[[:space:]]}" != "\$trimmed" ]; do
               trimmed=\${trimmed#[[:space:]]}
             done
-            case "\$trimmed" in
-              "\$want"*) ;;
-              *)
-                echo "pr-review: the body must start with \$want" >&2
+            approve="**判定: 承認 (APPROVE)**"
+            changes="**判定: 非承認 (REQUEST CHANGES)**"
+            if [ "$sub" = "review" ]; then
+              if [ -z "\$verdict" ]; then
+                echo "pr-review: needs --approve or --request-changes" >&2
                 exit 66
-                ;;
-            esac
+              fi
+              case "\$verdict" in
+                --approve) want=\$approve ;;
+                *) want=\$changes ;;
+              esac
+              case "\$trimmed" in
+                "\$want"*) ;;
+                *)
+                  echo "pr-review: the body must start with \$want" >&2
+                  exit 66
+                  ;;
+              esac
+            else
+              case "\$trimmed" in
+                "\$approve"*|"\$changes"*) ;;
+                *)
+                  echo "pr-comment: the body must start with \$approve or \$changes" >&2
+                  exit 66
+                  ;;
+              esac
+            fi
           fi
           exec gh pr $sub "$PR_NUMBER" "\$@"
           EOF
