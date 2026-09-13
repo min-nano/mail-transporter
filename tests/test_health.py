@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 
@@ -30,7 +31,8 @@ def test_health_endpoint_reports_status():
         url = f"http://127.0.0.1:{server.server_port}/healthz"
         with urllib.request.urlopen(url) as resp:
             assert resp.status == 200
-            assert b"'healthy': True" in resp.read()
+            assert resp.headers["Content-Type"] == "application/json"
+            assert json.loads(resp.read())["healthy"] is True
         clock.advance(11)
         try:
             urllib.request.urlopen(url)

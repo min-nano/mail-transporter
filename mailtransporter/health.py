@@ -10,6 +10,7 @@ budget expires, while a stopped VM simply refuses the connection.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -54,9 +55,9 @@ def serve(heartbeat: Heartbeat, port: int, host: str = "0.0.0.0") -> ThreadingHT
                 self.send_error(404)
                 return
             status = heartbeat.status()
-            body = str(status).encode()
+            body = json.dumps(status).encode()
             self.send_response(200 if status["healthy"] else 503)
-            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
