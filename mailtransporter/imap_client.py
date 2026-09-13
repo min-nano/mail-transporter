@@ -194,10 +194,19 @@ class ICloudMailbox:
                 client.create_folder(folder)
             if client.has_capability("MOVE"):
                 client.move([uid], folder)
-            else:
+            elif client.has_capability("UIDPLUS"):
+                # RFC 4315 UID EXPUNGE removes only this UID. A plain EXPUNGE
+                # would also purge every other \Deleted message in INBOX.
                 client.copy([uid], folder)
                 client.add_flags([uid], [imapclient.DELETED])
                 client.uid_expunge([uid])
+            else:
+                raise MailboxError(
+                    "IMAP server supports neither MOVE nor UIDPLUS; refusing to move "
+                    f"uid={uid} because the fallback could expunge unrelated mail"
+                )
+        except MailboxError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MailboxError(f"IMAP move uid={uid} -> {folder!r} failed: {exc}") from exc
 
