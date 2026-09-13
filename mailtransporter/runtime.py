@@ -22,6 +22,19 @@ def configure_logging() -> None:
     logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 
+def build_mailbox(settings: ForwarderSettings, *, readonly: bool = False) -> ICloudMailbox:
+    """An iCloud session that already knows which keywords mean "quarantined"."""
+    return ICloudMailbox(
+        settings.icloud.host,
+        settings.icloud.port,
+        settings.icloud.user,
+        settings.icloud.password,
+        timeout=settings.icloud.timeout,
+        readonly=readonly,
+        skip_keywords=settings.quarantine_keywords,
+    )
+
+
 def build_forwarder(settings: ForwarderSettings | None = None) -> Forwarder:
     settings = settings or ForwarderSettings.from_env()
     credentials = build_credentials(
@@ -29,13 +42,7 @@ def build_forwarder(settings: ForwarderSettings | None = None) -> Forwarder:
     )
 
     def mailbox_factory() -> ICloudMailbox:
-        return ICloudMailbox(
-            settings.icloud.host,
-            settings.icloud.port,
-            settings.icloud.user,
-            settings.icloud.password,
-            timeout=settings.icloud.timeout,
-        )
+        return build_mailbox(settings)
 
     def gmail_factory() -> GmailClient:
         return GmailClient(credentials)
@@ -45,6 +52,9 @@ def build_forwarder(settings: ForwarderSettings | None = None) -> Forwarder:
         failed_folder=settings.failed_folder,
         unverified_folder=settings.unverified_folder,
         inserted_keyword=settings.inserted_keyword,
+        failed_keyword=settings.failed_keyword,
+        unverified_keyword=settings.unverified_keyword,
+        quarantine_mode=settings.quarantine_mode,
         time_budget_seconds=settings.time_budget_seconds,
         rejection_threshold=settings.rejection_threshold,
     )

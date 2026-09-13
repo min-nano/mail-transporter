@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from mailtransporter.config import DEFAULT_FAILED_KEYWORD, DEFAULT_UNVERIFIED_KEYWORD
 from mailtransporter.forwarder import Forwarder, ForwarderOptions
 from mailtransporter.gmail_client import GmailError
 from mailtransporter.imap_client import FetchedMessage, MailboxError, MessageGone
@@ -19,7 +20,8 @@ class FakeMailbox:
         self.supports_keywords = True
         self.fail_fetch: set[int] = set()
         self.fail_move: set[int] = set()
-        self.fail_keyword: set[int] = set()
+        self.fail_keyword: set[int] = set()                    # every keyword fails for this uid
+        self.fail_keywords_named: set[tuple[int, str]] = set()  # only this (uid, keyword) fails
         self.connected = False
         self.idle_events: list[bool] = []
 
@@ -28,7 +30,7 @@ class FakeMailbox:
             raise MailboxError("no keyword support")
 
     def add_keyword(self, uid, keyword):
-        if uid in self.fail_keyword:
+        if uid in self.fail_keyword or (uid, keyword) in self.fail_keywords_named:
             raise MailboxError("boom keyword")
         if uid not in self.inbox:
             raise MailboxError(f"uid={uid} not in INBOX")
@@ -41,8 +43,13 @@ class FakeMailbox:
     def __exit__(self, *exc):
         self.connected = False
 
-    def list_inbox_uids(self):
-        return sorted(self.inbox)
+    def list_inbox_uids(self, *, skip_keywords=()):
+        skip = {k.lower() for k in skip_keywords}
+        return [
+            uid
+            for uid in sorted(self.inbox)
+            if not ({f.lower() for f in self.flags.get(uid, ())} & skip)
+        ]
 
     def fetch_message(self, uid):
         if uid in self.fail_fetch:
@@ -113,6 +120,19 @@ class FakeClock:
 @pytest.fixture
 def clock():
     return FakeClock()
+
+
+def quarantined(mailbox, keyword=DEFAULT_FAILED_KEYWORD):
+    """UIDs still sitting in the INBOX carrying ``keyword`` (the default quarantine)."""
+    return sorted(
+        uid
+        for uid in mailbox.inbox
+        if keyword.lower() in {f.lower() for f in mailbox.flags.get(uid, ())}
+    )
+
+
+def unverified(mailbox):
+    return quarantined(mailbox, DEFAULT_UNVERIFIED_KEYWORD)
 
 
 def make_forwarder(mailbox, gmail, clock=None, **opts):

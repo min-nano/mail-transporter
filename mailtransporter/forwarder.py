@@ -11,14 +11,20 @@ itself with an IMAP keyword:
   round trip) is resolved towards a duplicate in Gmail, never towards loss.
   Deduplicating via Gmail search would require a read scope on the mailbox
   and would let a forged Message-ID suppress delivery, so it is not done.
-  If the keyword is refused outright, the message is parked in a separate
-  "unverified" folder so the duplicate count stays at one and it is never
-  mistaken for mail that still needs forwarding.
-* Messages Gmail rejects permanently are moved to a separate IMAP folder so
-  they are never lost and never block the queue. Rejections are only acted
-  on at the end of a run: if every message was rejected and nothing got
-  through, the cause is almost certainly the account or the request shape,
-  not the mail, and nothing is moved.
+  If the keyword is refused for that one message, it is quarantined as
+  "unverified" so the duplicate count stays at one and it is never mistaken
+  for mail that still needs forwarding.
+* Messages Gmail rejects permanently are quarantined too, so they are never
+  lost and never block the queue. Rejections are only acted on at the end of
+  a run: if every message was rejected and nothing got through, the cause is
+  almost certainly the account or the request shape, not the mail, and
+  nothing is quarantined.
+
+Quarantining also happens on the message itself: it stays in the INBOX and is
+tagged with a keyword ($GmailFailed / $GmailUnverified) which every listing
+excludes, so the iCloud folder tree is left untouched. Only when the server
+refuses that keyword does the message fall back to a dedicated folder --
+without some marker it would be re-sent to Gmail on every single run.
 """
 
 from __future__ import annotations
@@ -28,6 +34,11 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Callable
 
+from .config import (
+    DEFAULT_FAILED_KEYWORD,
+    DEFAULT_INSERTED_KEYWORD,
+    DEFAULT_UNVERIFIED_KEYWORD,
+)
 from .gmail_client import (
     GmailAuthError,
     GmailClient,
@@ -38,8 +49,6 @@ from .gmail_client import (
 from .imap_client import FetchedMessage, ICloudMailbox, MailboxError, MessageGone
 
 log = logging.getLogger(__name__)
-
-DEFAULT_INSERTED_KEYWORD = "$GmailInserted"
 
 
 class AbortRun(Exception):
@@ -80,16 +89,26 @@ class Rejection:
 @dataclass(frozen=True)
 class ForwarderOptions:
     label: str | None = "iCloud"
-    # Gmail rejected the message; it is NOT in Gmail. Moving it back to INBOX retries it.
-    failed_folder: str = "Forward-Failed"
+    # Gmail rejected the message; it is NOT in Gmail. Clearing the keyword
+    # (``cli retry``) puts it back into the queue.
+    failed_keyword: str = DEFAULT_FAILED_KEYWORD
     # Gmail accepted the message but the keyword could not be recorded; it IS in
-    # Gmail. Moving it back to INBOX would insert a duplicate.
+    # Gmail. Clearing the keyword would insert a duplicate.
+    unverified_keyword: str = DEFAULT_UNVERIFIED_KEYWORD
+    # Fallback targets, used when quarantine_mode is "folder" and as the last
+    # resort when the server refuses the quarantine keyword.
+    failed_folder: str = "Forward-Failed"
     unverified_folder: str = "Forward-Unverified"
     inserted_keyword: str = DEFAULT_INSERTED_KEYWORD
+    quarantine_mode: str = "keyword"
     time_budget_seconds: float = 480.0
     # Circuit breaker: this many permanent rejections in one run with no
     # successful insert at all is treated as a systemic failure.
     rejection_threshold: int = 3
+
+    @property
+    def quarantine_keywords(self) -> tuple[str, str]:
+        return (self.failed_keyword, self.unverified_keyword)
 
 
 def gmail_labels_for(message: FetchedMessage, extra_label_ids: list[str]) -> list[str]:
@@ -126,7 +145,7 @@ class Forwarder:
                 mailbox.require_keywords()
                 gmail = self._gmail_factory()
                 extra_labels = [gmail.ensure_label(self._options.label)] if self._options.label else []
-                uids = mailbox.list_inbox_uids()
+                uids = mailbox.list_inbox_uids(skip_keywords=self._options.quarantine_keywords)
                 result.listed = len(uids)
                 for index, uid in enumerate(uids):
                     if self._clock() - started > self._options.time_budget_seconds:
@@ -172,7 +191,13 @@ class Forwarder:
             uid = rejection.uid
             log.error("uid=%s permanently rejected by Gmail: %s", uid, rejection.error)
             try:
-                self._quarantine(uid, mailbox, result)
+                self._quarantine(
+                    uid,
+                    mailbox,
+                    result,
+                    keyword=self._options.failed_keyword,
+                    folder=self._options.failed_folder,
+                )
             except AbortRun as exc:
                 log.error("Aborting run: %s", exc)
                 result.error = result.error or str(exc)
@@ -198,6 +223,14 @@ class Forwarder:
         except MailboxError as exc:
             raise AbortRun(f"IMAP failure while fetching uid={uid}: {exc}") from exc
 
+        # Belt and braces: a server that stores keywords but ignores a KEYWORD
+        # SEARCH criterion would still list quarantined mail as work.
+        quarantine = next((k for k in self._options.quarantine_keywords if message.has_keyword(k)), None)
+        if quarantine:
+            log.info("uid=%s carries %s; already quarantined, skipping", uid, quarantine)
+            result.skipped += 1
+            return
+
         if message.has_keyword(keyword):
             log.info("uid=%s already carries %s; skipping insert", uid, keyword)
         else:
@@ -218,11 +251,17 @@ class Forwarder:
                 mailbox.add_keyword(uid, keyword)
             except MailboxError as exc:
                 # Gmail already has the message but we cannot record that on
-                # the iCloud copy. Leaving it in INBOX would insert a fresh
-                # duplicate on every run, so park it in the unverified folder
+                # the iCloud copy. Leaving it in the queue would insert a fresh
+                # duplicate on every run, so quarantine it as unverified
                 # instead (never the Trash: the keyword is the only proof).
                 log.error("uid=%s inserted as %s but the keyword could not be set: %s", uid, gmail_id, exc)
-                self._quarantine(uid, mailbox, result, folder=self._options.unverified_folder)
+                self._quarantine(
+                    uid,
+                    mailbox,
+                    result,
+                    keyword=self._options.unverified_keyword,
+                    folder=self._options.unverified_folder,
+                )
                 return
 
         try:
@@ -232,8 +271,34 @@ class Forwarder:
         result.trashed += 1
         log.info("uid=%s moved to Trash", uid)
 
-    def _quarantine(self, uid: int, mailbox: ICloudMailbox, result: SyncResult, *, folder: str | None = None) -> None:
-        folder = folder or self._options.failed_folder
+    def _quarantine(
+        self,
+        uid: int,
+        mailbox: ICloudMailbox,
+        result: SyncResult,
+        *,
+        keyword: str,
+        folder: str,
+    ) -> None:
+        """Take ``uid`` out of the queue without deleting it.
+
+        In the default "keyword" mode the message stays where the user filed it
+        and only gains ``keyword``, which every listing excludes -- no folder is
+        created on the iCloud side. The folder move is kept as the fallback for
+        a server that refuses the keyword: some marker has to stick, or the
+        message would be re-sent to Gmail on every run.
+        """
+        if self._options.quarantine_mode == "keyword":
+            try:
+                mailbox.add_keyword(uid, keyword)
+            except MailboxError as exc:
+                log.warning(
+                    "uid=%s could not be marked %s (%s); falling back to folder %r", uid, keyword, exc, folder
+                )
+            else:
+                result.quarantined += 1
+                log.warning("uid=%s marked %s and left in place", uid, keyword)
+                return
         try:
             mailbox.move_to_folder(uid, folder)
         except MailboxError as exc:

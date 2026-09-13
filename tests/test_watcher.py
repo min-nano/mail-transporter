@@ -147,3 +147,18 @@ def test_run_forever_keeps_heartbeat_alive_and_reconnects():
     assert notifier.calls == 1           # the loop survives reconnects: same UID is not re-reported
     assert hb.ok()                       # heartbeat was refreshed before every blocking call
     assert slept and slept[0] == 5.0     # reconnect backoff
+
+
+def test_default_mailbox_factory_skips_quarantined_mail():
+    """Quarantined mail stays in the INBOX; the watcher must not see it as work."""
+    from mailtransporter.config import ICloudSettings, WatcherSettings
+    from mailtransporter.watcher import default_mailbox_factory
+
+    settings = WatcherSettings(
+        icloud=ICloudSettings(user="u", password="p"),
+        forwarder_url="https://x",
+        quarantine_keywords=("$GmailFailed", "$GmailUnverified"),
+    )
+    mailbox = default_mailbox_factory(settings)()
+    assert mailbox.skip_keywords == ("$GmailFailed", "$GmailUnverified")
+    assert mailbox.readonly is True

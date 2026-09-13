@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from mailtransporter.config import DEFAULT_FAILED_KEYWORD as FAILED_KW
 from mailtransporter.forwarder import DEFAULT_INSERTED_KEYWORD as KW
 from mailtransporter.gmail_client import GmailAuthError, GmailPermanentError, GmailRetryableError
 
-from conftest import FakeClock, make_forwarder, make_raw
+from conftest import FakeClock, make_forwarder, make_raw, quarantined, unverified
 
 
 def test_new_message_is_inserted_flagged_then_trashed(mailbox, gmail):
@@ -60,18 +61,35 @@ def test_trash_failure_after_insert_is_not_inserted_twice(mailbox, gmail):
 
 
 def test_keyword_failure_after_insert_parks_message_instead_of_looping(mailbox, gmail):
+    """Only the inserted keyword is refused: the message is tagged, not moved."""
+    mailbox.inbox[1] = make_raw("<x@example.com>")
+    mailbox.inbox[2] = make_raw("<y@example.com>")
+    mailbox.fail_keywords_named.add((1, KW))
+    result = make_forwarder(mailbox, gmail).run()
+    assert result.ok
+    assert len(gmail.inserted) == 2            # both delivered exactly once
+    assert unverified(mailbox) == [1]          # marked apart from real failures, never trashed
+    assert mailbox.folders == {"Deleted Messages": [2]}  # no new folder on the iCloud side
+    assert result.quarantined == 1 and result.trashed == 1
+
+    # it stays out of the queue, so no duplicate is produced on the next run
+    assert make_forwarder(mailbox, gmail).run().listed == 0
+    assert len(gmail.inserted) == 2
+
+
+def test_keyword_failure_falls_back_to_the_unverified_folder(mailbox, gmail):
+    """The server refuses keywords outright, so a folder is the only marker left."""
     mailbox.inbox[1] = make_raw("<x@example.com>")
     mailbox.inbox[2] = make_raw("<y@example.com>")
     mailbox.fail_keyword.add(1)
     result = make_forwarder(mailbox, gmail).run()
     assert result.ok
-    assert len(gmail.inserted) == 2            # both delivered exactly once
-    assert mailbox.folders["Forward-Unverified"] == [1]  # parked apart from real failures, never trashed
+    assert len(gmail.inserted) == 2
+    assert mailbox.folders["Forward-Unverified"] == [1]
     assert "Forward-Failed" not in mailbox.folders
     assert mailbox.folders["Deleted Messages"] == [2]
     assert result.quarantined == 1 and result.trashed == 1
 
-    # nothing left in INBOX: no duplicate is produced on the next run
     assert make_forwarder(mailbox, gmail).run().listed == 0
     assert len(gmail.inserted) == 2
 
@@ -105,15 +123,56 @@ def test_retryable_gmail_error_leaves_message_in_inbox(mailbox, gmail):
     assert result.forwarded == 1 and result.trashed == 1
 
 
-def test_permanent_error_moves_to_failed_folder(mailbox, gmail):
+def test_permanent_error_is_marked_with_a_keyword_and_left_in_place(mailbox, gmail):
     mailbox.inbox[1] = make_raw()
     mailbox.inbox[2] = make_raw("<ok@example.com>")
     gmail.errors.append(GmailPermanentError("400 invalid"))
     result = make_forwarder(mailbox, gmail).run()
     assert result.ok
     assert result.quarantined == 1 and result.forwarded == 1
-    assert mailbox.folders["Forward-Failed"] == [1]
-    assert mailbox.folders["Deleted Messages"] == [2]
+    assert quarantined(mailbox) == [1]
+    assert mailbox.folders == {"Deleted Messages": [2]}  # the folder tree is untouched
+
+
+def test_quarantined_mail_is_never_offered_to_gmail_again(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    gmail.errors.append(GmailPermanentError("400 invalid"))
+    assert make_forwarder(mailbox, gmail).run().quarantined == 1
+
+    second = make_forwarder(mailbox, gmail).run()
+    assert second.ok and second.listed == 0
+    assert gmail.inserted == [] and 1 in mailbox.inbox
+
+
+def test_quarantined_mail_is_skipped_even_if_the_server_ignores_the_search(mailbox, gmail):
+    """A server may store keywords yet ignore a NOT KEYWORD criterion."""
+    mailbox.inbox[1] = make_raw()
+    mailbox.flags[1] = frozenset({FAILED_KW})
+    mailbox.list_inbox_uids = lambda **_: sorted(mailbox.inbox)
+
+    result = make_forwarder(mailbox, gmail).run()
+    assert result.ok and result.listed == 1 and result.skipped == 1
+    assert gmail.inserted == [] and 1 in mailbox.inbox
+
+
+def test_folder_mode_still_moves_rejected_mail(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    result = make_forwarder(mailbox, gmail, quarantine_mode="folder").run()
+    assert result.ok
+
+    mailbox.inbox[2] = make_raw("<two@example.com>")
+    gmail.errors.append(GmailPermanentError("400 invalid"))
+    result = make_forwarder(mailbox, gmail, quarantine_mode="folder").run()
+    assert result.quarantined == 1
+    assert mailbox.folders["Forward-Failed"] == [2]
+    assert quarantined(mailbox) == []
+
+
+def test_custom_quarantine_keyword_name(mailbox, gmail):
+    mailbox.inbox[1] = make_raw()
+    gmail.errors.append(GmailPermanentError("400 invalid"))
+    make_forwarder(mailbox, gmail, failed_keyword="$Nope").run()
+    assert "$Nope" in mailbox.flags[1] and 1 in mailbox.inbox
 
 
 def test_systemic_rejections_do_not_quarantine(mailbox, gmail):
@@ -125,7 +184,7 @@ def test_systemic_rejections_do_not_quarantine(mailbox, gmail):
     assert not result.ok and "rejected" in result.error
     assert result.quarantined == 0
     assert set(mailbox.inbox) == {1, 2, 3, 4}
-    assert "Forward-Failed" not in mailbox.folders
+    assert quarantined(mailbox) == [] and mailbox.folders == {"Deleted Messages": []}
 
 
 def test_rejections_below_threshold_are_quarantined_even_without_successes(mailbox, gmail):
@@ -134,7 +193,7 @@ def test_rejections_below_threshold_are_quarantined_even_without_successes(mailb
     gmail.errors.extend([GmailPermanentError("413 too large")] * 2)
     result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
     assert result.ok and result.quarantined == 2
-    assert mailbox.folders["Forward-Failed"] == [1, 2]
+    assert quarantined(mailbox) == [1, 2]
 
 
 def test_rejections_with_a_success_are_quarantined(mailbox, gmail):
@@ -143,7 +202,7 @@ def test_rejections_with_a_success_are_quarantined(mailbox, gmail):
     gmail.errors.extend([GmailPermanentError("413")] * 3)  # uids 1-3 rejected, 4 succeeds
     result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
     assert result.ok and result.forwarded == 1 and result.quarantined == 3
-    assert mailbox.folders["Forward-Failed"] == [1, 2, 3]
+    assert quarantined(mailbox) == [1, 2, 3]
 
 
 def test_auth_error_aborts_run(mailbox, gmail):
@@ -224,8 +283,8 @@ def test_rejections_are_quarantined_even_when_a_later_message_aborts_the_run(mai
     result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
     assert not result.ok and "401" in result.error
     assert result.quarantined == 1 and result.remaining == 2
-    assert mailbox.folders["Forward-Failed"] == [1]
-    assert set(mailbox.inbox) == {2, 3}
+    assert quarantined(mailbox) == [1]
+    assert set(mailbox.inbox) == {1, 2, 3}  # marked in place, but no longer queued
 
 
 def test_rejections_keep_the_original_error_when_imap_is_broken(mailbox, gmail):
@@ -233,6 +292,7 @@ def test_rejections_keep_the_original_error_when_imap_is_broken(mailbox, gmail):
     mailbox.inbox[2] = make_raw("<two@example.com>")
     gmail.errors.append(GmailPermanentError("413 too large"))
     mailbox.fail_fetch.add(2)
+    mailbox.fail_keyword.add(1)
     mailbox.fail_move.add(1)
     result = make_forwarder(mailbox, gmail).run()
     assert not result.ok and "fetching uid=2" in result.error
@@ -247,7 +307,7 @@ def test_oversized_mail_is_quarantined_even_when_the_breaker_trips(mailbox, gmai
     gmail.errors.extend([GmailPermanentError("413 too large", status=413)] * 4)
     result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
     assert result.ok and result.quarantined == 4
-    assert mailbox.folders["Forward-Failed"] == [1, 2, 3, 4]
+    assert quarantined(mailbox) == [1, 2, 3, 4]
 
 
 def test_breaker_still_parks_oversized_mail_alongside_suspicious_rejections(mailbox, gmail):
@@ -258,5 +318,5 @@ def test_breaker_still_parks_oversized_mail_alongside_suspicious_rejections(mail
     )
     result = make_forwarder(mailbox, gmail, rejection_threshold=3).run()
     assert not result.ok and "3 message(s)" in result.error
-    assert mailbox.folders["Forward-Failed"] == [1]
-    assert set(mailbox.inbox) == {2, 3, 4}
+    assert quarantined(mailbox) == [1]
+    assert make_forwarder(mailbox, gmail).run().listed == 3  # only 2-4 are still queued

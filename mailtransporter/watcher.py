@@ -149,6 +149,10 @@ def default_mailbox_factory(settings: WatcherSettings) -> Callable[[], ICloudMai
             settings.icloud.password,
             timeout=settings.icloud.timeout,
             readonly=True,
+            # Quarantined mail stays in the INBOX; without this the watcher
+            # would see a never-empty INBOX and re-trigger the forwarder for
+            # messages it has already given up on.
+            skip_keywords=settings.quarantine_keywords,
         )
 
     return factory
