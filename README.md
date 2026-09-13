@@ -148,6 +148,97 @@ cp deploy/env.example.sh deploy/env.sh   # PROJECT_ID, ICLOUD_USER などを編�
 3. 以後は main への push（PR のマージ）で自動的にデプロイされます。Actions の **Deploy** ワークフローから手動実行もできます。
    同時に 2 つのデプロイが走らないよう直列化され、テストが失敗した場合はデプロイしません。
 
+### 3c. PR を Claude に自動レビューさせる（任意）
+
+`.github/workflows/claude-review.yml` が、このリポジトリ内のブランチから開かれた PR に対して
+[Claude Code Action](https://github.com/anthropics/claude-code-action) を走らせ、セキュリティと
+コストを重点にレビューします。指摘は可能な限りインラインコメント、行に紐づかないものだけを
+レビュー本文にまとめ、最後に **承認 / 非承認** の判定を付けます。判定はプロンプトの指示だけで
+なく投稿ラッパー側でも強制しており、本文が所定の判定行で始まらないレビューや、判定フラグと
+本文の判定行が食い違うレビューは投稿されません（指示だけでは、動作確認のつもりの `test` 投稿が
+判定付きレビューとして PR に残ってしまったため）。フォールバックのコメント投稿にも同じ条件を
+課しているので、判定を伴わない投稿はどちらの経路からも出ません。
+
+Claude Pro / Max のサブスクリプションをそのまま使うので、API キー（従量課金）は不要です。
+
+1. 手元の Claude Code で長期 OAuth トークンを発行します。
+
+   ```bash
+   claude setup-token
+   ```
+
+2. 出力されたトークンを GitHub リポジトリの **Secrets**（Settings → Secrets and variables → Actions →
+   Secrets）に `CLAUDE_CODE_OAUTH_TOKEN` という名前で登録します。未登録のときはワークフローが
+   その旨のエラーで即座に止まります。
+
+このワークフローが満たしている前提:
+
+* トリガは `pull_request` だけで、`pull_request_target` は使いません。fork からの PR には
+  シークレットが渡らないうえ、ジョブの `if` で明示的に除外しているので、書き込み権限のない
+  第三者が PR 経由でトークンやリポジトリの権限を引き出すことはできません。
+* ワークフロー既定の権限は空で、レビュージョブにだけ `contents: read` と `pull-requests: write` を
+  与えます。チェックアウトは `persist-credentials: false` です。
+* Action には `github_token` としてジョブ既定の `GITHUB_TOKEN` を明示的に渡します。これを省くと
+  Action は OIDC トークンを Claude GitHub App のトークンに交換しようとして `id-token: write` を
+  要求します。明示的に渡すことでその経路を使わず、権限はこのジョブに与えた 2 つだけに収まり、
+  Claude GitHub App のインストールも不要になります。
+* Claude に許可するのは読み取りと、この PR 番号を焼き込んだ投稿用ラッパー 4 つだけです。
+  `gh` 自体も `Write` / `Edit` / `WebFetch` も渡しません。許可パターンはプレフィックス一致なので、
+  PR 番号を Claude の引数にすると `Bash(gh pr review 3:*)` が `gh pr review 30 --approve` にも
+  一致してしまいます。番号をラッパー側に持たせることで、対象 PR の固定が文字列一致の挙動に
+  依存しなくなります。ラッパーは渡せるフラグも許可リストで絞ります。`--body-file` を通すと、
+  ランナー上の任意ファイル（`/proc/self/environ` を含む）の中身を PR コメントとして公開できて
+  しまい、投稿自体は正規の出力チャンネルなので `curl` の禁止では防げないためです。
+* `Read` / `Grep` / `Glob` は `blockReadsOutsideWorkingDirectories` と `Read` の deny ルールで
+  チェックアウト内に閉じ込めます。deny に `~/**` とは書けません。GitHub ホストランナーでは
+  ホーム（`/home/runner`）がチェックアウト（`/home/runner/work/<repo>/<repo>`）の祖先なので、
+  レビュー対象のファイルまで全部塞いでしまいます（実際に README すら読めませんでした）。
+  機微なパスだけを個別に挙げています。範囲を絞らないと、`/proc/self/environ` などを読んで中身を
+  `--body` に貼り付け、PR コメントとして公開できてしまうためです（`--body-file` を塞いでも
+  同じことが `--body` でできます）。加えてラッパーは、投稿本文にこのジョブの
+  `CLAUDE_CODE_OAUTH_TOKEN` / `GITHUB_TOKEN` が含まれていたら投稿を拒否します。
+  ただしこの検査が掛かるのはラッパー経由の投稿だけです。インラインコメントは Action の
+  MCP ツールが直接投稿するため通りません。そちらは「投稿するテキストに環境変数の中身や
+  トークンを含めない」というプロンプトの指示で担保しています。なお `CLAUDE_CODE_OAUTH_TOKEN`
+  の漏洩は `GITHUB_TOKEN` より影響が大きい点に注意してください。前者はこのリポジトリに
+  閉じず、あなたの Claude サブスクリプションの資格情報です。万一漏れた場合は
+  `claude setup-token` で再発行し、シークレットを差し替えてください。
+* この検査が機能しない状態（3 つの環境変数がいずれも空）では、`pr-comment` / `pr-review` は
+  投稿を拒否します（fail-closed）。検査できない本文を公開するより止める方を選ぶためです。
+  黙って止まると気付けないので `::error::` 注釈でチェックに出します。`pr-view` / `pr-diff` は
+  何も公開しないので影響を受けず、差分の読み取りは続けられます。
+* allowedTools はサンドボックスではなくベストエフォートの制限です。すり抜けられた場合に備えて、
+  外部送信の経路を持たせない（`WebFetch` / `WebSearch` を禁止し `curl` / `wget` も許可しない）、
+  ジョブの権限をこのリポジトリの PR コメントだけに絞る、という二重の封じ込めをかけています。
+* PR の本文や差分に書かれた文言は「指示」ではなく「データ」として扱うようプロンプトで
+  明示しています。
+* 同じ PR への連続 push は `concurrency` で古い実行を打ち切り、ジョブには `timeout-minutes: 20` を
+  置いているので、ハングやリトライで実行時間とサブスクリプションの利用枠を浪費しません。
+  draft の PR と Dependabot の PR はレビューしません（後者はシークレットを受け取れないため）。
+  レビュー実行中に push すると `concurrency` でその実行が打ち切られます。インラインコメントは
+  その場で投稿される一方、判定は最後にまとめて出すので、打ち切りや `timeout-minutes` 超過が
+  重なると**インラインコメントだけが残り判定が付かない**ことがあります。その場合は次の push か
+  Actions の再実行でレビューをやり直してください。
+  `edited`（タイトル・本文の編集）はトリガに含めていません。編集のたびにフルレビューが走る
+  わりにレビュー対象の差分は変わらないためで、本文に後から指示めいた文言を足されても
+  「指示ではなくデータ」として扱い指摘対象にする、という建付けで担保しています。
+* PR に投稿される経路は、ラッパー（`pr-comment` / `pr-review`）とインラインコメントの 2 つだけです。
+  `prompt` を渡しているのでこの Action は agent モードで動き、進捗トラッキングコメントは
+  作られません。`track_progress` は有効にしないでください。有効にすると tag モードになり、
+  ツール入力を生の JSON で載せる進捗コメントが投稿されます（Bash に渡したコマンド文字列が
+  そのまま PR に出ます）。ラッパーの検査も判定書式の強制もこの経路には掛かりません。
+* **fork からの PR はレビューされません。** シークレットを渡せない以上避けられない
+  トレードオフですが、最も警戒すべき外部からの投稿が自動レビューの対象外になる点は
+  運用上の注意点として残ります。fork PR は人のレビューで受けてください。
+
+> **注意**: Claude の `--approve` は GitHub 上では通常の承認レビューです。ブランチ保護で必須承認数を
+> 設けている場合、Claude の承認だけでマージできてしまわないよう、Code Owners のレビューを必須にするなど
+> 人の承認が別途必要な設定にしてください。
+>
+> なお `GITHUB_TOKEN` による承認は、Settings → Actions → General の
+> **Allow GitHub Actions to create and approve pull requests** が無効だと拒否されます（既定は無効）。
+> その場合 Claude はコメント投稿にフォールバックし、判定はコメント本文の先頭行に出ます。
+
 ### 4. 動作確認
 
 ```bash
@@ -242,6 +333,7 @@ python -m mailtransporter.cli sync
 | Artifact Registry | 0.5 GB | イメージは直近 2 世代のみ保持。ベースと依存のレイヤーは世代間で共有される | 依存を頻繁に変える場合。`gcloud artifacts docker images list --format='value(package,version)'` でサイズ確認 |
 | GCE e2-micro | 1 台 / 月（us-west1, us-central1, us-east1） | 常時 1 台。IMAP の通信は IDLE と UID 一覧だけで本文は取得しない | リージョンを変えた場合 |
 | Secret Manager | 6 バージョン、1 万アクセス / 月 | Cloud Run のコールドスタートと watcher 起動時のみ | 実質到達しない |
+| GitHub Actions | public リポジトリは無制限 | PR ごとに review ジョブが 1 回（`timeout-minutes: 20` が上限、実測は 10 分前後）。同じ PR への連続 push は `concurrency` で打ち切る | private にした場合。Free プランの 2,000 分 / 月を `ci.yml` / `deploy.yml` と分け合うことになる |
 | Cloud Logging | 50 GiB / 月 | 1 通あたり数行 | 実質到達しない |
 
 運用開始後は Cloud Run の「送信バイト数」（`run.googleapis.com/container/network/sent_bytes_count`）と
