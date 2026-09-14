@@ -454,9 +454,9 @@ idna==3.19 \
     --hash=sha256:5e0811a4383b21dc5838069f801c4fb62113b7447663d2530d2bd6e77b49bf15 \
     --hash=sha256:815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4
     # via requests
-imapclient==3.1.0 \
-    --hash=sha256:34c192ffe82936e940a998ac89c474296942cd7c4f6c208f0fccfcd972946038 \
-    --hash=sha256:b0413a516ffcc4b4d69f2c611c0e95da57968edf5a5c78ac82d1bf882305facc
+imapclient==4.0.1 \
+    --hash=sha256:9c46f431ceecde87ae1bbb8c287cbeb20bc70bcbee3d0c3bd0c01808d28630f4 \
+    --hash=sha256:c7dd1a175eda1cb1e99a5aeca4ea2c0b0a3ed36f13b2e677bc3447588336df27
     # via mail-transporter (pyproject.toml)
 itsdangerous==2.2.0 \
     --hash=sha256:c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef \
