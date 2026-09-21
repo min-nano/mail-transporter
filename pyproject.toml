@@ -9,7 +9,7 @@ description = "Reliably forward iCloud Mail (IMAP) messages into Gmail via the G
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "imapclient>=3.0,<4",
+    "imapclient>=3.0,<5",
     "google-api-python-client>=2.100,<3",
     "google-auth>=2.23,<3",
     "google-auth-httplib2>=0.2",
